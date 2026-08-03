@@ -1,0 +1,28 @@
+{
+  "name": "@geminixiang/pi-remember",
+  "version": "0.1.0",
+  "description": "Skill that records durable decisions into AGENTS.md",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "memory",
+    "agents-md",
+    "notes"
+  ],
+  "author": "geminixiang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-remember"
+  },
+  "files": [
+    "skills",
+    "README.md"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}

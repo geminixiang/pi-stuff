@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "types": ["node"],
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "paths": { "@geminixiang/pi-task-protocol": ["../pi-task-protocol/src/index.ts"] }
+  },
+  "include": ["src/**/*.ts", "extensions/**/*.ts", "test/**/*.ts"]
+}

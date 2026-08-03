@@ -1,0 +1,27 @@
+{
+  "name": "pi-stuff",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for @geminixiang Pi extensions and skills",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,tool-catalog,memory,hooks}/**/*.{ts,json,md}'",
+    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,tool-catalog,memory,hooks}/**/*.{ts,json,md}'",
+    "verify": "npm run check && npm test && npm run lint && npm run fmt:check",
+    "pack:check": "npm pack --dry-run --workspaces"
+  },
+  "devDependencies": {
+    "oxfmt": "0.60.0",
+    "oxlint": "1.75.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

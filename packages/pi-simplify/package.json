@@ -1,0 +1,32 @@
+{
+  "name": "@geminixiang/pi-simplify",
+  "version": "0.1.2",
+  "description": "Simplify: Review changed code for reuse, quality, and efficiency",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-simplify"
+  },
+  "main": "index.ts",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
+    "typebox": "^1.1.38",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

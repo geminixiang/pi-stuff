@@ -1,0 +1,43 @@
+{
+  "name": "@geminixiang/pi-diff",
+  "version": "0.3.2",
+  "description": "Pi extension: open a GitHub-like git diff viewer in the browser.",
+  "author": "geminixiang",
+  "license": "MIT",
+  "homepage": "https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-diff#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-diff"
+  },
+  "bugs": {
+    "url": "https://github.com/geminixiang/pi-stuff/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "diff",
+    "git"
+  ],
+  "files": [
+    "extensions/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --check extensions/pi-diff.js && node test.js",
+    "perf": "node perf.js"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "diff2html": "^3.4.56"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.11.1"
+  }
+}

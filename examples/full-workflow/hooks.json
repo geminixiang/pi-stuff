@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "session_start": [
+      {
+        "name": "fetch-remote",
+        "command": ["git", "fetch", "--quiet", "--all"],
+        "timeoutMs": 20000
+      }
+    ],
+    "tool_call": [
+      {
+        "name": "guard-push",
+        "match": "^bash$",
+        "command": ["node", "examples/full-workflow/guard-push.mjs"],
+        "blockOnFailure": true,
+        "timeoutMs": 30000
+      }
+    ],
+    "tool_result": [
+      {
+        "name": "format-after-edit",
+        "match": "^(write|edit)$",
+        "command": ["npm", "run", "fmt"],
+        "timeoutMs": 60000
+      }
+    ]
+  }
+}

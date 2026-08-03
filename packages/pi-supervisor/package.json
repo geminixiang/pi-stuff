@@ -1,0 +1,44 @@
+{
+  "name": "@geminixiang/pi-supervisor",
+  "version": "0.1.0",
+  "description": "Durable local task daemon and Pi supervisor extension",
+  "license": "MIT",
+  "bin": {
+    "taskd": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "extensions",
+    "README.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./subagents": "./src/subagents.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@geminixiang/pi-task-protocol": "0.1.0",
+    "typebox": "1.3.8"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "24.10.1",
+    "tsx": "4.23.1",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}

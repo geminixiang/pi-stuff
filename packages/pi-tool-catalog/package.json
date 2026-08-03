@@ -1,0 +1,49 @@
+{
+  "name": "@geminixiang/pi-tool-catalog",
+  "version": "0.1.0",
+  "description": "Deferred tool discovery and activation for Pi",
+  "keywords": [
+    "catalog",
+    "pi",
+    "pi-coding-agent",
+    "pi-package",
+    "tools"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-tool-catalog"
+  },
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "tsx": "4.23.1",
+    "typebox": "1.1.38",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

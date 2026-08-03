@@ -1,0 +1,82 @@
+name: Publish package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Workspace directory name
+        required: true
+        type: choice
+        options:
+          - pi-simplify
+          - pi-cicd-status
+          - pi-diff
+          - pi-mermaid
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Select workspace
+        id: workspace
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            package="$INPUT_PACKAGE"
+          else
+            package="${RELEASE_TAG%@*}"
+          fi
+
+          case "$package" in
+            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid) ;;
+            *) echo "Unsupported package: $package" >&2; exit 1 ;;
+          esac
+
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify repository
+        run: npm run verify
+
+      - name: Verify release tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PACKAGE: ${{ steps.workspace.outputs.package }}
+        run: |
+          version=$(node -p "require('./packages/$PACKAGE/package.json').version")
+          expected="$PACKAGE@$version"
+          if [[ "$RELEASE_TAG" != "$expected" ]]; then
+            echo "Release tag must be $expected, got $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Publish to npm
+        env:
+          PACKAGE: ${{ steps.workspace.outputs.package }}
+        run: |
+          version=$(node -p "require('./packages/$PACKAGE/package.json').version")
+          args=(--workspace "./packages/$PACKAGE" --provenance --access public)
+          if [[ "$version" == *-* ]]; then
+            args+=(--tag beta)
+          fi
+          npm publish "${args[@]}"

@@ -1,0 +1,52 @@
+{
+  "name": "@geminixiang/pi-mermaid",
+  "version": "0.1.2",
+  "description": "Render Mermaid diagrams as Unicode art inside the pi terminal UI",
+  "type": "module",
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-mermaid"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "mermaid",
+    "terminal",
+    "diagram"
+  ],
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/mermaid.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "beautiful-mermaid": "^1.1.3"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typebox": "^1.0.52",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

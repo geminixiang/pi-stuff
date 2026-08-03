@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "types",
+      "command": "npm",
+      "args": ["run", "check"],
+      "timeoutMs": 300000
+    },
+    {
+      "id": "tests",
+      "command": "npm",
+      "args": ["test"],
+      "timeoutMs": 600000
+    },
+    {
+      "id": "format",
+      "command": "npm",
+      "args": ["run", "fmt:check"],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "lint",
+      "command": "npm",
+      "args": ["run", "lint"],
+      "requirement": "optional",
+      "timeoutMs": 120000
+    }
+  ],
+  "concurrency": 2,
+  "repairBudget": 1
+}
