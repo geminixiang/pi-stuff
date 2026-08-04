@@ -62,6 +62,7 @@ The LLM-free suite verifies transport and isolation properties reproducibly:
 - removing a required stage prevents the runtime from inventing the expected result;
 - an external moderator and eight opaque players complete a hidden-role game entirely through generic messages;
 - game roles are shuffled and private; public evidence contains only hashes for private bodies.
+- the turn-ending protocol (`TurnState` in `src/turn-state.ts`) — accept/reject decisions, guard-text distinctions, and the queued-command set — fully covered without a live model, since it's pure: no session, no I/O.
 
 These tests prove the generic runtime routes isolated adapters correctly. They do **not** by themselves prove that a particular LLM reasons independently. That requires a live-model run and transcript inspection. No live result should be reported as stronger evidence than its recorded session IDs, deliveries, wakes, and messages support.
 

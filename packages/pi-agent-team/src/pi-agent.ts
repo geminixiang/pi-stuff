@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { MessageEnvelope, TeamAgent, TeamCommand, TeamMember, TeamTurn } from "./domain.js";
+import { TurnState } from "./turn-state.js";
 
 interface SessionLike {
   readonly sessionId: string;
@@ -19,9 +20,7 @@ interface SessionLike {
 
 export class PiTeamAgent implements TeamAgent {
   private session?: SessionLike;
-  private outbox: TeamCommand[] = [];
-  private claimPending = false;
-  private turnEnded = false;
+  private readonly turnState = new TurnState();
   private readonly provisionalSessionId = crypto.randomUUID();
 
   constructor(
@@ -36,9 +35,7 @@ export class PiTeamAgent implements TeamAgent {
 
   async act(turn: TeamTurn, signal: AbortSignal): Promise<readonly TeamCommand[]> {
     const session = await this.getSession();
-    this.outbox = [];
-    this.claimPending = false;
-    this.turnEnded = false;
+    this.turnState.reset();
     if (signal.aborted) throw signal.reason;
     const onAbort = () => void session.abort().catch(() => {});
     signal.addEventListener("abort", onAbort, { once: true });
@@ -49,12 +46,12 @@ export class PiTeamAgent implements TeamAgent {
       // A terminal team action (wait/finish/claim) self-aborts the prompt to
       // stop further tool-call rounds; the queued command still stands. Only
       // rethrow if nothing was queued, which means a real failure occurred.
-      if (!this.outbox.length) throw cause;
+      if (!this.turnState.queued.length) throw cause;
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
     if (signal.aborted) throw signal.reason;
-    if (this.outbox.length) return Object.freeze([...this.outbox]);
+    if (this.turnState.queued.length) return Object.freeze([...this.turnState.queued]);
     return parseCommands(session.getLastAssistantText() ?? "");
   }
 
@@ -92,7 +89,7 @@ export class PiTeamAgent implements TeamAgent {
         description: "Post public speech to the team chat. This does not wake waiting peers.",
         parameters: Type.Object({ body: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { body: string }) =>
-          this.queue({ type: "say", body: params.body }, "spoken publicly"),
+          this.handle({ type: "say", body: params.body }, "spoken publicly"),
       },
       {
         name: "team_dm",
@@ -103,7 +100,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { to: string; body: string }) =>
-          this.queue({ type: "send", to: params.to, body: params.body }, "private message queued"),
+          this.handle({ type: "send", to: params.to, body: params.body }, "private message queued"),
       },
       {
         name: "team_group_create",
@@ -119,7 +116,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { channelId: string; name: string; members: string[] }) =>
-          this.queue(
+          this.handle(
             {
               type: "create-group",
               channelId: params.channelId,
@@ -138,7 +135,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { channelId: string; body: string }) =>
-          this.queue(
+          this.handle(
             { type: "group-send", channelId: params.channelId, body: params.body },
             "group message queued",
           ),
@@ -152,7 +149,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { to: string; body: string }) =>
-          this.queue({ type: "handoff", to: params.to, body: params.body }, "handed off"),
+          this.handle({ type: "handoff", to: params.to, body: params.body }, "handed off"),
       },
       {
         name: "team_claim",
@@ -160,17 +157,11 @@ export class PiTeamAgent implements TeamAgent {
         description:
           "Atomically claim an opaque resource. This must be the only action in the response.",
         parameters: Type.Object({ resource: Type.String() }, { additionalProperties: false }),
-        execute: async (_id, params: { resource: string }) => {
-          if (this.outbox.length || this.claimPending || this.turnEnded)
-            return toolText(
-              "claim rejected locally: team_claim must be the only action in this response",
-            );
-          this.claimPending = true;
-          this.turnEnded = true;
-          this.outbox.push({ type: "claim", resource: params.resource });
-          void this.session?.abort().catch(() => {});
-          return toolText("claim queued; stop now and wait for the runtime result");
-        },
+        execute: async (_id, params: { resource: string }) =>
+          this.handle(
+            { type: "claim", resource: params.resource },
+            "claim queued; stop now and wait for the runtime result",
+          ),
       },
       {
         name: "team_release",
@@ -178,14 +169,14 @@ export class PiTeamAgent implements TeamAgent {
         description: "Release a resource you currently own so others can claim it.",
         parameters: Type.Object({ resource: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { resource: string }) =>
-          this.queue({ type: "release", resource: params.resource }, "release queued"),
+          this.handle({ type: "release", resource: params.resource }, "release queued"),
       },
       {
         name: "team_wait",
         label: "Wait",
         description: "End your turn without acting; you will wake on the next interrupt.",
         parameters: Type.Object({}, { additionalProperties: false }),
-        execute: async () => this.queue({ type: "wait" }, "waiting"),
+        execute: async () => this.handle({ type: "wait" }, "waiting"),
       },
       {
         name: "team_finish",
@@ -193,7 +184,7 @@ export class PiTeamAgent implements TeamAgent {
         description: "Mark your work finished. This is not a public message.",
         parameters: Type.Object({ summary: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { summary: string }) =>
-          this.queue({ type: "finish", summary: params.summary }, "finished"),
+          this.handle({ type: "finish", summary: params.summary }, "finished"),
       },
     ];
     const created = await createAgentSession({
@@ -210,26 +201,11 @@ export class PiTeamAgent implements TeamAgent {
     return created.session;
   }
 
-  private queue(command: TeamCommand, confirmation: string) {
-    if (this.claimPending) return claimFenceText();
-    if (this.turnEnded) return turnEndedText();
-    this.outbox.push(command);
-    if (endsTurn(command)) {
-      this.turnEnded = true;
-      void this.session?.abort().catch(() => {});
-    }
-    return toolText(confirmation);
+  private handle(command: TeamCommand, confirmation: string) {
+    const { text, endsTurn } = this.turnState.apply(command, confirmation);
+    if (endsTurn) void this.session?.abort().catch(() => {});
+    return toolText(text);
   }
-}
-
-/**
- * wait and finish mean "nothing more to do this turn"; a model that keeps
- * calling tools after either one just burns turn latency and risks the
- * per-agent timeout. Ending the turn here is what makes the timeout budget
- * cover team decisions instead of internal re-polling.
- */
-export function endsTurn(command: TeamCommand): boolean {
-  return command.type === "wait" || command.type === "finish" || command.type === "claim";
 }
 
 function formatTurn(turn: TeamTurn): string {
@@ -279,14 +255,6 @@ function formatObservation(message: MessageEnvelope): string {
 /** A turn that ends with no team tool call is leniently treated as waiting. */
 export function parseCommands(_text: string): readonly TeamCommand[] {
   return [{ type: "wait" }];
-}
-
-function claimFenceText() {
-  return toolText("blocked by pending claim: stop and wait for CLAIM_ACQUIRED or CLAIM_REJECTED");
-}
-
-function turnEndedText() {
-  return toolText("turn already ended by a prior wait/finish/claim this response; stop calling tools");
 }
 
 function toolText(text: string) {
