@@ -7,7 +7,7 @@ A rule-agnostic, mailbox-driven agent team runtime for Pi.
 Production code knows nothing about relay counting, werewolf, expected answers, roles, or phases. It provides only generic coordination — including a generic vote tally, not a domain-specific one: the runtime counts opaque choices and reports ties honestly, it never knows what a vote is *for*.
 
 - independent member identities and unique Pi `AgentSession`s with full pi-coding-agent capability (only extensions are withheld, so a member cannot recursively start teams);
-- direct `team_dm` and explicit `team_handoff`;
+- direct `team_dm` and explicit `team_handoff`; a recipient may be named by member id or by an unambiguous display name — a name shared by two members, or matching none, bounces rather than being guessed at;
 - public `team_say` (passive) and `team_broadcast` (interrupts everyone at once — the only member-originated public interrupt; use sparingly);
 - immutable restricted groups through `team_group_create` and `team_group_send`;
 - opaque atomic `team_claim` with explicit `team_release`, auto-released when the owner finishes or errors;
@@ -68,6 +68,7 @@ The LLM-free suite verifies transport and isolation properties reproducibly:
 - the turn-ending protocol (`TurnState` in `src/turn-state.ts`) — accept/reject decisions, guard-text distinctions, and the queued-command set — fully covered without a live model, since it's pure: no session, no I/O.
 - poll tallying — clear winners, honest ties, quorum that excludes errored non-voters, that a poll locks in permanently on its first close, and that opening a new poll id without holding a matching claim is rejected (`test/poll.test.ts`).
 - same-source wave sequencing — a wave sharing one cause envelope runs member-by-member, each observing the prior members' committed claims; a wave from distinct envelopes, and a flush-promoted wave, are unaffected; `team_broadcast` wakes every teammate from a single envelope (`test/same-source-wave.test.ts`).
+- recipient resolution — an id always resolves; a display name resolves only when it names exactly one member; two members sharing a name, or a name matching none, bounces instead of misdelivering; `team_group_create`'s member list accepts the same mix (`test/recipient-resolution.test.ts`).
 
 These tests prove the generic runtime routes isolated adapters correctly. They do **not** by themselves prove that a particular LLM reasons independently. That requires a live-model run and transcript inspection. No live result should be reported as stronger evidence than its recorded session IDs, deliveries, wakes, and messages support.
 

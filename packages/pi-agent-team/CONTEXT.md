@@ -9,7 +9,7 @@
 - **Observation** — an envelope made visible to one authorized member. Observation does not necessarily wake that member.
 - **Wake policy** — whether delivery merely records an observation (`passive`) or also makes the recipient runnable (`interrupt`).
 - **Public speech** — an envelope posted to the public channel. It is distinct from finishing work. Passive by default (`team_say`); a member may instead post an interrupting public **broadcast** (`team_broadcast`) — the one member-originated exception to invariant 4, for when several specific teammates must respond to the same thing right now without a DM to each.
-- **Direct message** — a restricted envelope between one sender and one member.
+- **Direct message** — a restricted envelope between one sender and one member. Addressed by member id, or by display name when it names exactly one member (see invariant 5).
 - **Group message** — a restricted envelope visible only to the immutable membership of a named group channel.
 - **Handoff** — a direct interrupt whose purpose is to transfer the next action to one member.
 - **Claim** — an atomic ownership attempt and synchronization fence. The result arrives later as a runtime direct message. Resource names are team-visible. Creating a group or opening a new poll id requires already holding a claim on that exact id — the runtime enforces this, not just doctrine, so a duplicate can't be created faster than it can be argued about.
@@ -28,7 +28,7 @@
 2. An envelope's sender, channel, audience, body, and wake policy never change after posting.
 3. Only authorized channel members receive plaintext observations.
 4. Public speech is passive by default (`team_say`); it enters every member's observation queue but does not itself consume an agent turn. The runtime's `MEMBER_ERRORED` alert, `POLL_CLOSED` result, and a member's own `team_broadcast` are the only public interrupts.
-5. Direct messages and handoffs interrupt exactly their recipient. An undeliverable or invalid command bounces to its sender as a runtime notice; it never fails silently or fatally.
+5. Direct messages and handoffs interrupt exactly their recipient. An undeliverable or invalid command bounces to its sender as a runtime notice; it never fails silently or fatally. A recipient may be named by member id or by display name; a name resolves only when it unambiguously names exactly one member — two members sharing a name, or a name matching none, bounces rather than guessing, since guessing risks delivering to the wrong person.
 6. Group messages interrupt exactly the other current group members.
 7. A passive observation is delivered the next time its member wakes for an interrupt, or in a final flush wake before the team settles.
 8. `finish` is control-plane state, never public speech. A member must explicitly speak before finishing if the objective requires a public answer.

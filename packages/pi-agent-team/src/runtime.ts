@@ -461,18 +461,38 @@ export class TeamRuntime {
       );
       return;
     }
-    this.assertDeliverable(command.to);
+    const to = this.resolveMemberId(command.to);
+    this.assertDeliverable(to);
     this.post(
       from,
-      { kind: "direct", memberId: command.to },
+      { kind: "direct", memberId: to },
       command.body,
       "interrupt",
       command.type === "handoff" ? "handoff" : "message",
     );
   }
 
+  /**
+   * Members are told each other's opaque id, but also see display names in
+   * PEERS and every transcript — mixing the two up is a natural mistake,
+   * not a rule violation, so it's resolved rather than just bounced. An id
+   * always wins outright; a name resolves only when it unambiguously names
+   * exactly one member. Two members sharing a display name is never
+   * silently guessed at — that would risk delivering to the wrong person,
+   * strictly worse than a bounce.
+   */
+  private resolveMemberId(candidate: string): MemberId {
+    if (this.agents.has(candidate)) return candidate;
+    const matches = [...this.agents.values()].filter((agent) => agent.member.name === candidate);
+    if (matches.length === 1) return matches[0].member.id;
+    if (matches.length > 1)
+      throw new Error(
+        `ambiguous recipient "${candidate}": multiple members share that name; use one of their ids instead (${matches.map((agent) => agent.member.id).join(", ")})`,
+      );
+    throw new Error(`unknown recipient "${candidate}"`);
+  }
+
   private assertDeliverable(to: MemberId): void {
-    if (!this.agents.has(to)) throw new Error(`unknown recipient ${to}`);
     if (this.finished.has(to)) throw new Error(`recipient ${to} has finished and cannot be woken`);
     if (this.errored.has(to)) throw new Error(`recipient ${to} errored and cannot be woken`);
   }
@@ -620,9 +640,8 @@ export class TeamRuntime {
     if (this.groups.has(channelId)) throw new Error(`Group already exists: ${channelId}`);
     if (this.claims.get(channelId) !== creator)
       throw new Error(`must claim ${channelId} before creating a group with that id`);
-    const members = Object.freeze([...new Set([creator, ...requestedMembers])]);
-    for (const member of members)
-      if (!this.agents.has(member)) throw new Error(`Unknown group member: ${member}`);
+    const resolvedMembers = requestedMembers.map((candidate) => this.resolveMemberId(candidate));
+    const members = Object.freeze([...new Set([creator, ...resolvedMembers])]);
     const group = Object.freeze({ kind: "group" as const, id: channelId, name, members });
     this.groups.set(channelId, group);
     this.record("channel.created", creator, undefined, {
