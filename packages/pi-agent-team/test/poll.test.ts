@@ -148,6 +148,59 @@ test("a member other than the claim holder may still cast the first vote once th
   assert.ok(result.events.some((event) => event.type === "poll.cast" && event.memberId === "b"));
 });
 
+test("choice is an opaque exact-match string: two spellings of the same candidate fragment the tally rather than merging", async () => {
+  // Documents intended behavior, not a bug: the runtime treats `choice` the
+  // same way it treats claim resource names and poll ids — opaque and
+  // exact-match, no semantic merging. A live run showed three votes for the
+  // same person split 2/1 across "id" and "display name (id)" spellings.
+  // This is why doctrine tells members to vote using a member id
+  // consistently when electing someone — the runtime can't fix a naming
+  // collision it isn't allowed to interpret.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  class Coordinator {
+    readonly member = members[0];
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
+        return [
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "send", to: "b", body: "vote" },
+          { type: "send", to: "c", body: "vote" },
+          { type: "wait" },
+        ];
+      return [{ type: "vote-close", pollId: "p" }, { type: "finish", summary: "closed" }];
+    }
+  }
+  class Voter {
+    readonly sessionId = crypto.randomUUID();
+    constructor(
+      readonly member: TeamMember,
+      private readonly choice: string,
+    ) {}
+    async act(): Promise<readonly TeamCommand[]> {
+      return [
+        { type: "vote-cast", pollId: "p", choice: this.choice },
+        { type: "send", to: "a", body: "voted" },
+        { type: "finish", summary: "voted" },
+      ];
+    }
+  }
+  const agents = [new Coordinator(), new Voter(members[1], "x"), new Voter(members[2], "X")];
+  const result = await new TeamRuntime(
+    "spelling",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  const closed = result.publicTranscript.find((message) => message.body.startsWith("POLL_CLOSED"));
+  assert.ok(closed);
+  assert.match(closed!.body, /"x":2/, "the two lowercase votes count together");
+  assert.match(closed!.body, /"X":1/, "the differently-cased vote is a distinct, unmerged option");
+});
+
 test("a tied poll is reported honestly, never auto-broken", async () => {
   const members: TeamMember[] = [
     { id: "a", name: "A" },
