@@ -265,7 +265,7 @@ export class PiTeamAgent implements TeamAgent {
   }
 }
 
-function formatTurn(turn: TeamTurn): string {
+export function formatTurn(turn: TeamTurn): string {
   return [
     `TEAM OBJECTIVE: ${turn.objective}`,
     `YOUR ID: ${turn.member.id}`,
@@ -279,7 +279,7 @@ function formatTurn(turn: TeamTurn): string {
 }
 
 function formatDigest(turn: TeamTurn): string[] {
-  const { states, claims, groups } = turn.digest;
+  const { states, claims, groups, polls } = turn.digest;
   const lines = [
     `TEAM STATE: ${turn.peers
       .map((member) => `${member.id}=${states[member.id] ?? "idle"}`)
@@ -294,6 +294,19 @@ function formatDigest(turn: TeamTurn): string[] {
     lines.push(
       `YOUR GROUPS: ${groups
         .map((group) => `${group.name} (${group.id}): ${group.members.join(", ")}`)
+        .join("; ")}`,
+    );
+  // Open polls are otherwise only visible by re-reading past public speech;
+  // surfacing the live tally here means a member can tell whether a poll is
+  // still open, and who's missing, without reconstructing it from history
+  // (invariant 1 — a shared mental model supplied on every wake).
+  if (polls.length)
+    lines.push(
+      `OPEN POLLS: ${polls
+        .map(
+          (poll) =>
+            `${poll.pollId} tally=${JSON.stringify(poll.tally)} missing=${JSON.stringify(poll.missing)}`,
+        )
         .join("; ")}`,
     );
   return lines;

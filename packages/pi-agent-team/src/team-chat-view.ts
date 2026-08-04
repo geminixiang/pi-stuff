@@ -1,6 +1,7 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Markdown, type Component } from "@earendil-works/pi-tui";
 import type { ChannelTarget, TeamActivity, TeamMemberState, TeamProgress, TeamResult } from "./domain.js";
+import { accentWrap } from "./member-colors.js";
 
 export interface TeamDisplayDetails {
   members: readonly { id: string; name: string }[];
@@ -14,24 +15,8 @@ export interface TeamChatViewOptions {
   isPartial: boolean;
 }
 
-// Curated xterm-256 codes: mid-saturation, legible on both light and dark
-// terminal backgrounds. Picked by hand rather than probing truecolor support
-// since 256-color codes render fine in truecolor terminals too.
-const MEMBER_PALETTE = [39, 78, 141, 173, 175, 179, 203, 208, 213, 75, 222, 114] as const;
-
-function hashString(value: string): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index++) hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  return hash;
-}
-
-function accentFor(memberId: string): { code: number; wrap: (text: string) => string } {
-  const code = MEMBER_PALETTE[hashString(memberId) % MEMBER_PALETTE.length];
-  return { code, wrap: (text) => `[38;5;${code}m${text}[39m` };
-}
-
-function bar(code: number): string {
-  return `[38;5;${code}m┃[39m`;
+function bar(memberId: string): string {
+  return accentWrap(memberId, "┃");
 }
 
 interface ChatRow {
@@ -53,15 +38,14 @@ class MessageRow implements ChatRow {
     const member = members.find((candidate) => candidate.id === item.memberId);
     const speakerName =
       item.memberId === "user" ? "You" : item.memberId === "runtime" ? "Runtime" : (member?.name ?? item.memberId);
-    const accent = accentFor(item.memberId);
-    this.accentBar = bar(accent.code);
+    this.accentBar = bar(item.memberId);
     const tag =
       item.kind === "finish"
         ? theme.fg("success", "✓ finished")
         : item.kind === "error"
           ? theme.fg("error", "✗ errored")
           : channelTag(item, theme);
-    this.headerLine = `${accent.wrap(theme.bold(speakerName))} ${theme.fg("dim", `(${item.memberId})`)}  ${tag}`;
+    this.headerLine = `${accentWrap(item.memberId, theme.bold(speakerName))} ${theme.fg("dim", `(${item.memberId})`)}  ${tag}`;
     this.markdown = new Markdown(item.body ?? item.text, 0, 0, getMarkdownTheme());
     this.lastTheme = theme;
   }
@@ -85,10 +69,9 @@ class CompactRow implements ChatRow {
     const member = members.find((candidate) => candidate.id === item.memberId);
     const speakerName =
       item.memberId === "user" ? "You" : item.memberId === "runtime" ? "Runtime" : (member?.name ?? item.memberId);
-    const accent = accentFor(item.memberId);
     this.line =
       item.kind === "claim"
-        ? `  ${theme.fg("muted", "⚙")} ${accent.wrap(speakerName)} ${theme.fg("dim", item.text)}`
+        ? `  ${theme.fg("muted", "⚙")} ${accentWrap(item.memberId, speakerName)} ${theme.fg("dim", item.text)}`
         : `  ${theme.fg("dim", `· ${speakerName} ${item.text}`)}`;
   }
 

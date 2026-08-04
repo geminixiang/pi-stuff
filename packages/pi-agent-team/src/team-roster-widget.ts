@@ -1,21 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TeamActivity, TeamMemberState } from "./domain.js";
+import { accentCode } from "./member-colors.js";
 import type { TeamDisplayDetails } from "./team-chat-view.js";
 
 const ESC = "\x1b";
-
-const MEMBER_PALETTE = [39, 78, 141, 173, 175, 179, 203, 208, 213, 75, 222, 114] as const;
-
-function hashString(value: string): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index++) hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  return hash;
-}
-
-function accentCode(memberId: string): number {
-  return MEMBER_PALETTE[hashString(memberId) % MEMBER_PALETTE.length];
-}
 
 type Role = "speaking" | "addressed" | "finished" | "errored" | "idle";
 

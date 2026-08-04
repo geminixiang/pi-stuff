@@ -27,9 +27,9 @@ const CLAIM_SOLE_ACTION_TEXT =
  * The turn-ending protocol (CONTEXT.md invariant 16) as a pure state
  * machine: given a command, decide whether it's accepted, what text the
  * tool should return, and whether the turn is now over. No session, no
- * I/O — every one of pi-agent-team's seven custom tools funnels its
- * command through this single instance's apply(), so the invariant has
- * exactly one place it can be enforced or drift.
+ * I/O — every one of pi-agent-team's custom tools funnels its command
+ * through this single instance's apply(), so the invariant has exactly
+ * one place it can be enforced or drift.
  */
 export class TurnState {
   private commands: TeamCommand[] = [];
