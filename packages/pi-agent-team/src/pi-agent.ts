@@ -77,8 +77,8 @@ export class PiTeamAgent implements TeamAgent {
       noThemes: true,
       systemPrompt: [
         `You are ${this.member.name} (${this.member.id}), one symmetric worker in an independent agent team. Peer order has no task meaning; never infer order from IDs, names, or peer-list position. You have your normal tools for real work, plus team tools for coordination.`,
-        `Team mechanics: team_say is public speech visible to the whole team but does not wake peers. team_dm is a private interrupt to one member. team_group_create creates a restricted group; team_group_send privately interrupts its members. team_handoff is a private interrupt that transfers the next action. team_claim is a synchronization fence: call it alone, stop, and wait for CLAIM_ACQUIRED or CLAIM_REJECTED; team_release returns a claim you own. Claim resource names are visible to the whole team, so use non-revealing names for private coordination. team_wait ends your turn without acting. team_finish is control state, not speech.`,
-        `Communication doctrine: (a) Public speech is only for conclusions, decisions, and results the team or user must know; it wakes no one. (b) To make someone act, use a direct message or handoff, and make it self-sufficient: situation, what is done, what they must do, whom to notify after. (c) Briefly acknowledge a received handoff before acting on it. (d) If you are the last step of a chain, notify the initiator or coordinator by direct message before finishing. (e) When blocked, rejected, or uncertain, escalate by direct message immediately; never wait silently. (f) Claim only before an exclusive action — one where only one member may validly do it (assigning a role, picking who goes first, modifying a shared resource such as a file); release it when done. Do not claim before an action every member is meant to do independently and redundantly, such as casting your own vote or answering with your own yes/no/unsure — those need no arbitration, just do them. (g) If nothing you could say would change anyone's next action, call team_wait. (h) A finish summary states only what you actually did; if the objective requires an answer or public statement, call team_say before team_finish. (i) Never state a fact that is a specific member's own secret or hidden assignment in any message addressed to that member, including a broadcast summary sent to multiple recipients — redact or omit each recipient's own entry before sending to them.`,
+        `Team mechanics: team_say is public speech visible to the whole team but does not wake peers. team_dm is a private interrupt to one member. team_group_create creates a restricted group; team_group_send privately interrupts its members. team_handoff is a private interrupt that transfers the next action. team_claim is a synchronization fence: call it alone, stop, and wait for CLAIM_ACQUIRED or CLAIM_REJECTED; team_release returns a claim you own. Claim resource names are visible to the whole team, so use non-revealing names for private coordination. team_vote_cast casts or changes your vote in an open poll (any opaque pollId). team_vote_close tallies a poll and has the runtime — never a member — publicly announce the result with the full vote breakdown, who was expected to vote but hasn't, and the outcome; a tie is reported honestly and never broken automatically. Anyone may close a poll; the runtime computes it once, so results can't be miscounted or self-declared. team_wait ends your turn without acting. team_finish is control state, not speech.`,
+        `Communication doctrine: (a) Public speech is only for conclusions, decisions, and results the team or user must know; it wakes no one. (b) To make someone act, use a direct message or handoff, and make it self-sufficient: situation, what is done, what they must do, whom to notify after. (c) Briefly acknowledge a received handoff before acting on it. (d) If you are the last step of a chain, notify the initiator or coordinator by direct message before finishing. (e) When blocked, rejected, or uncertain, escalate by direct message immediately; never wait silently. (f) Claim only before an exclusive action — one where only one member may validly do it (assigning a role, picking who goes first, modifying a shared resource such as a file); release it when done. Do not claim before an action every member is meant to do independently and redundantly, such as casting your own vote or answering with your own yes/no/unsure — those need no arbitration, just do them. (g) If nothing you could say would change anyone's next action, call team_wait. (h) A finish summary states only what you actually did; if the objective requires an answer or public statement, call team_say before team_finish. (i) Never state a fact that is a specific member's own secret or hidden assignment in any message addressed to that member, including a broadcast summary sent to multiple recipients — redact or omit each recipient's own entry before sending to them. (j) When the team must choose among options by majority, such as electing a role, use team_vote_cast and team_vote_close instead of announcing votes and tallies yourselves — never count votes or declare a winner by hand.`,
       ].join("\n\n"),
     });
     await loader.reload();
@@ -170,6 +170,30 @@ export class PiTeamAgent implements TeamAgent {
         parameters: Type.Object({ resource: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { resource: string }) =>
           this.handle({ type: "release", resource: params.resource }, "release queued"),
+      },
+      {
+        name: "team_vote_cast",
+        label: "Cast a vote",
+        description:
+          "Cast or change your vote in an open poll. Votes are visible to the whole team, not secret.",
+        parameters: Type.Object(
+          { pollId: Type.String(), choice: Type.String() },
+          { additionalProperties: false },
+        ),
+        execute: async (_id, params: { pollId: string; choice: string }) =>
+          this.handle(
+            { type: "vote-cast", pollId: params.pollId, choice: params.choice },
+            "vote cast",
+          ),
+      },
+      {
+        name: "team_vote_close",
+        label: "Close a poll",
+        description:
+          "Tally an open poll and have the runtime publicly announce the result. Anyone may call this; the runtime computes the tally, so it can never be miscounted or self-declared. Ties are reported honestly, never broken automatically.",
+        parameters: Type.Object({ pollId: Type.String() }, { additionalProperties: false }),
+        execute: async (_id, params: { pollId: string }) =>
+          this.handle({ type: "vote-close", pollId: params.pollId }, "poll closed; see the public result"),
       },
       {
         name: "team_wait",

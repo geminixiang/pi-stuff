@@ -7,6 +7,8 @@ import type {
   MemberId,
   MessageEnvelope,
   MessageId,
+  PollOutcome,
+  PollResult,
   PrincipalId,
   TeamActivity,
   TeamAgent,
@@ -50,6 +52,8 @@ export class TeamRuntime {
   private readonly ready = new Set<MemberId>();
   private readonly flushing = new Set<MemberId>();
   private readonly claims = new Map<string, MemberId>();
+  private readonly polls = new Map<string, Map<MemberId, string>>();
+  private readonly closedPolls = new Map<string, PollResult>();
   private readonly states = new Map<MemberId, TeamMemberState>();
   private activitySequence = 0;
   private auditHead = "0".repeat(64);
@@ -405,6 +409,14 @@ export class TeamRuntime {
       this.createGroup(from, command.channelId, command.name, command.members);
       return;
     }
+    if (command.type === "vote-cast") {
+      this.castVote(from, command.pollId, command.choice);
+      return;
+    }
+    if (command.type === "vote-close") {
+      this.closePoll(from, command.pollId);
+      return;
+    }
     if (command.type === "say") {
       this.post(from, { kind: "public" }, command.body, "passive", "speech");
       return;
@@ -491,6 +503,81 @@ export class TeamRuntime {
     );
   }
 
+  private castVote(from: MemberId, pollId: string, choice: string): void {
+    if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
+    let votes = this.polls.get(pollId);
+    if (!votes) {
+      votes = new Map();
+      this.polls.set(pollId, votes);
+    }
+    votes.set(from, choice);
+    this.record("poll.cast", from, undefined, { pollId, choice });
+    this.activity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+  }
+
+  /**
+   * Anyone may close a poll — there is no fixed tally-owner, only a fixed
+   * outcome, computed once by the runtime rather than self-reported by a
+   * member. Ties are reported honestly, never broken automatically
+   * (invariant 12: settlement never asserts correctness; a poll outcome
+   * follows the same discipline).
+   */
+  private closePoll(from: MemberId, pollId: string): void {
+    const existing = this.closedPolls.get(pollId);
+    if (existing)
+      throw new Error(`poll already closed: ${pollId} — ${describePollOutcome(existing.outcome)}`);
+    const votes = this.polls.get(pollId) ?? new Map<MemberId, string>();
+    const result = this.tallyPoll(pollId, votes);
+    this.closedPolls.set(pollId, result);
+    this.polls.delete(pollId);
+    this.record("poll.closed", from, undefined, {
+      pollId,
+      tally: result.tally,
+      missing: result.missing,
+      outcome: result.outcome,
+    });
+    this.activity(
+      from,
+      "vote",
+      `closed ${pollId}: ${describePollOutcome(result.outcome)}`,
+      { kind: "public" },
+      [...this.agents.keys()],
+    );
+    this.post(
+      "runtime",
+      { kind: "public" },
+      `POLL_CLOSED pollId=${JSON.stringify(pollId)} tally=${JSON.stringify(result.tally)} missing=${JSON.stringify(result.missing)} outcome=${JSON.stringify(result.outcome)}`,
+      "interrupt",
+      "system",
+    );
+  }
+
+  private tallyPoll(pollId: string, votes: ReadonlyMap<MemberId, string>): PollResult {
+    const tally: Record<string, number> = {};
+    for (const choice of votes.values()) tally[choice] = (tally[choice] ?? 0) + 1;
+    const castIds = new Set(votes.keys());
+    const eligible = [...this.agents.keys()].filter((id) => castIds.has(id) || this.runnable(id));
+    const missing = eligible.filter((id) => !castIds.has(id));
+    const entries = Object.entries(tally);
+    const outcome: PollOutcome = !entries.length
+      ? { kind: "no-votes" }
+      : (() => {
+          const max = Math.max(...entries.map(([, count]) => count));
+          const winners = entries.filter(([, count]) => count === max).map(([choice]) => choice);
+          return winners.length === 1
+            ? { kind: "winner", choice: winners[0] }
+            : { kind: "tie", choices: Object.freeze(winners) };
+        })();
+    return Object.freeze({
+      pollId,
+      tally: Object.freeze(tally),
+      votes: Object.freeze(Object.fromEntries(votes)),
+      eligible: Object.freeze(eligible),
+      missing: Object.freeze(missing),
+      outcome,
+    });
+  }
+
   private createGroup(
     creator: MemberId,
     channelId: ChannelId,
@@ -574,6 +661,12 @@ export class TeamRuntime {
         [...this.groups.values()]
           .filter((group) => group.members.includes(memberId))
           .map((group) => Object.freeze({ id: group.id, name: group.name, members: group.members })),
+      ),
+      polls: Object.freeze(
+        [...this.polls.entries()].map(([pollId, votes]) => {
+          const result = this.tallyPoll(pollId, votes);
+          return Object.freeze({ pollId, tally: result.tally, missing: result.missing });
+        }),
       ),
     });
   }
@@ -662,6 +755,12 @@ export class TeamRuntime {
   private totalTurns(): number {
     return [...this.turns.values()].reduce((sum, count) => sum + count, 0);
   }
+}
+
+function describePollOutcome(outcome: PollOutcome): string {
+  if (outcome.kind === "winner") return `winner=${outcome.choice}`;
+  if (outcome.kind === "tie") return `tie=${outcome.choices.join(",")}`;
+  return "no votes";
 }
 
 function directChannelId(from: PrincipalId, to: MemberId): string {

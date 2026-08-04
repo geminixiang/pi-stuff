@@ -35,12 +35,19 @@ export interface MessageEnvelope {
 /**
  * Control-plane team state supplied on every wake so members never reconstruct
  * it from message history. Claim resources are team-visible by design; groups
- * include only those the waking member belongs to.
+ * include only those the waking member belongs to. Polls are open ballots
+ * only — once closed, the result is a public message, not live state (same
+ * lifecycle as claims: released claims drop out of `claims` too).
  */
 export interface TeamDigest {
   states: Readonly<Record<MemberId, TeamMemberState>>;
   claims: Readonly<Record<string, MemberId>>;
   groups: readonly { id: ChannelId; name: string; members: readonly MemberId[] }[];
+  polls: readonly {
+    pollId: string;
+    tally: Readonly<Record<string, number>>;
+    missing: readonly MemberId[];
+  }[];
 }
 
 export interface TeamTurn {
@@ -60,9 +67,39 @@ export type TeamCommand =
   | { type: "group-send"; channelId: ChannelId; body: string }
   | { type: "claim"; resource: string }
   | { type: "release"; resource: string }
+  | { type: "vote-cast"; pollId: string; choice: string }
+  | { type: "vote-close"; pollId: string }
   | { type: "handoff"; to: MemberId; body: string }
   | { type: "finish"; summary: string }
   | { type: "wait" };
+
+/**
+ * How a poll resolved: a clear winner, an honest tie (the runtime never
+ * breaks it — that's a team decision, not the runtime's to make, same
+ * principle as invariant 12: settlement never asserts correctness), or no
+ * votes at all.
+ */
+export type PollOutcome =
+  | { kind: "winner"; choice: string }
+  | { kind: "tie"; choices: readonly string[] }
+  | { kind: "no-votes" };
+
+/**
+ * The runtime-computed, code-tallied result of a closed poll. `votes` is
+ * the full per-member breakdown — polls are open ballots, not secret, same
+ * transparency stance as claim resource names. `eligible` excludes only
+ * errored members at close time (quorum awareness, not vote validity);
+ * `missing` is the eligible members who never cast before close, so a
+ * closer can tell an honest tie from a premature close.
+ */
+export interface PollResult {
+  pollId: string;
+  tally: Readonly<Record<string, number>>;
+  votes: Readonly<Record<MemberId, string>>;
+  eligible: readonly MemberId[];
+  missing: readonly MemberId[];
+  outcome: PollOutcome;
+}
 
 export interface TeamAgent {
   readonly member: TeamMember;
@@ -84,6 +121,8 @@ export interface AuditEvent {
     | "member.claimed"
     | "member.claimRejected"
     | "claim.released"
+    | "poll.cast"
+    | "poll.closed"
     | "member.finished"
     | "member.errored"
     | "command.failed"
@@ -112,7 +151,7 @@ export interface TeamProgress {
 export interface TeamActivity {
   sequence: number;
   memberId: PrincipalId;
-  kind: "message" | "wake" | "claim" | "finish" | "wait" | "channel" | "error";
+  kind: "message" | "wake" | "claim" | "vote" | "finish" | "wait" | "channel" | "error";
   text: string;
   visibility: "public" | "restricted";
   channel: ChannelTarget;

@@ -16,6 +16,8 @@ test("wait, finish, and claim end the turn; say/dm/handoff/release/group ops do 
     { type: "release", resource: "r" },
     { type: "create-group", channelId: "g", name: "G", members: ["b"] },
     { type: "group-send", channelId: "g", body: "hi" },
+    { type: "vote-cast", pollId: "p", choice: "a" },
+    { type: "vote-close", pollId: "p" },
   ];
   for (const command of terminal) assert.equal(endsTurn(command), true, command.type);
   for (const command of nonTerminal) assert.equal(endsTurn(command), false, command.type);

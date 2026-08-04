@@ -4,13 +4,14 @@ A rule-agnostic, mailbox-driven agent team runtime for Pi.
 
 ## What ships
 
-Production code knows nothing about relay counting, werewolf, expected answers, roles, phases, or voting. It provides only generic coordination:
+Production code knows nothing about relay counting, werewolf, expected answers, roles, or phases. It provides only generic coordination — including a generic vote tally, not a domain-specific one: the runtime counts opaque choices and reports ties honestly, it never knows what a vote is *for*.
 
 - independent member identities and unique Pi `AgentSession`s with full pi-coding-agent capability (only extensions are withheld, so a member cannot recursively start teams);
 - direct `team_dm` and explicit `team_handoff`;
 - public `team_say`;
 - immutable restricted groups through `team_group_create` and `team_group_send`;
 - opaque atomic `team_claim` with explicit `team_release`, auto-released when the owner finishes or errors;
+- `team_vote_cast`/`team_vote_close`: a runtime-tallied poll, never self-declared by a member — a tie is reported honestly and never broken automatically, and the result names which expected voters never cast before close;
 - observation-queue wake-up, `team_wait`, and `team_finish` — each ends a member's turn immediately (the adapter self-aborts the session) instead of letting a member re-poll the same tool dozens of times within one turn;
 - a control-plane digest (member states, held claims, own groups) supplied on every wake;
 - error degradation: a member whose turn fails becomes `errored`, announced publicly, and messages to it bounce back to the sender;
@@ -63,6 +64,7 @@ The LLM-free suite verifies transport and isolation properties reproducibly:
 - an external moderator and eight opaque players complete a hidden-role game entirely through generic messages;
 - game roles are shuffled and private; public evidence contains only hashes for private bodies.
 - the turn-ending protocol (`TurnState` in `src/turn-state.ts`) — accept/reject decisions, guard-text distinctions, and the queued-command set — fully covered without a live model, since it's pure: no session, no I/O.
+- poll tallying — clear winners, honest ties, quorum that excludes errored non-voters, and that a poll locks in permanently on its first close (`test/poll.test.ts`).
 
 These tests prove the generic runtime routes isolated adapters correctly. They do **not** by themselves prove that a particular LLM reasons independently. That requires a live-model run and transcript inspection. No live result should be reported as stronger evidence than its recorded session IDs, deliveries, wakes, and messages support.
 
