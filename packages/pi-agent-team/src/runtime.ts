@@ -51,6 +51,18 @@ export class TeamRuntime {
   private readonly turns = new Map<MemberId, number>();
   private readonly ready = new Set<MemberId>();
   private readonly flushing = new Set<MemberId>();
+  /**
+   * The envelope id that most recently made each member ready. When an
+   * entire wave shares one cause (typically a single broadcast reaching
+   * everyone at once), those members are woken sequentially instead of
+   * concurrently — each act() call then observes the prior members'
+   * already-applied claims/groups/polls in its digest, so N members told
+   * the same thing at the same time converge on one coordination structure
+   * instead of each independently creating their own and reconciling
+   * duplicates afterward. Waves caused by distinct envelopes (directed
+   * messages, handoffs) keep running concurrently, unaffected.
+   */
+  private readonly readyCause = new Map<MemberId, MessageId>();
   private readonly claims = new Map<string, MemberId>();
   private readonly polls = new Map<string, Map<MemberId, string>>();
   private readonly closedPolls = new Map<string, PollResult>();
@@ -124,10 +136,17 @@ export class TeamRuntime {
         (left, right) => stableRank(rankSeed, left) - stableRank(rankSeed, right),
       );
       this.ready.clear();
-      for (let start = 0; start < wave.length; start += waveConcurrency)
-        await Promise.all(
-          wave.slice(start, start + waveConcurrency).map((id) => this.wake(id, signal)),
-        );
+      const cause = this.readyCause.get(wave[0]);
+      const sameSource =
+        wave.length > 1 && cause !== undefined && wave.every((id) => this.readyCause.get(id) === cause);
+      if (sameSource) {
+        for (const id of wave) await this.wake(id, signal);
+      } else {
+        for (let start = 0; start < wave.length; start += waveConcurrency)
+          await Promise.all(
+            wave.slice(start, start + waveConcurrency).map((id) => this.wake(id, signal)),
+          );
+      }
       this.options.onProgress?.(this.progress());
     }
     if (signal?.aborted) throw signal.reason;
@@ -210,6 +229,9 @@ export class TeamRuntime {
       this.ready.add(id);
       this.flushing.add(id);
       this.states.set(id, "ready");
+      // Flush promotion is not a shared broadcast cause; never let a flush
+      // wave be mistaken for a same-source wave.
+      this.readyCause.delete(id);
       promoted = true;
     }
     return promoted;
@@ -419,6 +441,14 @@ export class TeamRuntime {
     }
     if (command.type === "say") {
       this.post(from, { kind: "public" }, command.body, "passive", "speech");
+      return;
+    }
+    if (command.type === "broadcast") {
+      // The only member-originated public interrupt: for the rare case
+      // where every member must respond to the same thing right now. Wakes
+      // everyone in one wave sharing one envelope, so the same-source
+      // sequencing above applies to whatever they do next.
+      this.post(from, { kind: "public" }, command.body, "interrupt", "speech");
       return;
     }
     if (command.type === "group-send") {
@@ -653,6 +683,7 @@ export class TeamRuntime {
       if (wake === "interrupt") {
         this.ready.add(recipient);
         this.states.set(recipient, "ready");
+        this.readyCause.set(recipient, envelope.id);
       }
     }
     this.recent = `${from} → ${channel.id}`;

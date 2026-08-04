@@ -62,6 +62,7 @@ export interface TeamTurn {
 
 export type TeamCommand =
   | { type: "say"; body: string }
+  | { type: "broadcast"; body: string }
   | { type: "send"; to: MemberId; body: string }
   | { type: "create-group"; channelId: ChannelId; name: string; members: readonly MemberId[] }
   | { type: "group-send"; channelId: ChannelId; body: string }

@@ -11,6 +11,7 @@ test("wait, finish, and claim end the turn; say/dm/handoff/release/group ops do 
   ];
   const nonTerminal: TeamCommand[] = [
     { type: "say", body: "hi" },
+    { type: "broadcast", body: "hi" },
     { type: "send", to: "b", body: "hi" },
     { type: "handoff", to: "b", body: "hi" },
     { type: "release", resource: "r" },

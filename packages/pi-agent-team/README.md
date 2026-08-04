@@ -8,11 +8,12 @@ Production code knows nothing about relay counting, werewolf, expected answers, 
 
 - independent member identities and unique Pi `AgentSession`s with full pi-coding-agent capability (only extensions are withheld, so a member cannot recursively start teams);
 - direct `team_dm` and explicit `team_handoff`;
-- public `team_say`;
+- public `team_say` (passive) and `team_broadcast` (interrupts everyone at once — the only member-originated public interrupt; use sparingly);
 - immutable restricted groups through `team_group_create` and `team_group_send`;
 - opaque atomic `team_claim` with explicit `team_release`, auto-released when the owner finishes or errors;
 - `team_vote_cast`/`team_vote_close`: a runtime-tallied poll, never self-declared by a member — a tie is reported honestly and never broken automatically, and the result names which expected voters never cast before close;
 - creating a group, or opening a brand-new poll id, requires already holding a claim on that exact id — enforced by the runtime, not left to doctrine, so two members racing to set up the same kind of thing in the same wave can't both succeed and leave a mess to reconcile;
+- a same-source wave (every member made ready by the identical envelope — the initial broadcast, or a `team_broadcast`) executes sequentially instead of concurrently, so later members in that wave observe earlier members' already-applied claims/groups/polls before deciding what to do, instead of everyone independently attempting the same thing at once and reconciling duplicates afterward;
 - observation-queue wake-up, `team_wait`, and `team_finish` — each ends a member's turn immediately (the adapter self-aborts the session) instead of letting a member re-poll the same tool dozens of times within one turn;
 - a control-plane digest (member states, held claims, own groups) supplied on every wake;
 - error degradation: a member whose turn fails becomes `errored`, announced publicly, and messages to it bounce back to the sender;
@@ -29,9 +30,9 @@ The runtime follows CPU-style worker coordination rather than assigning a workfl
 - `team_claim` is an atomic compare-and-swap-like election/work-ownership primitive and a synchronization fence: it must be the only action in that response, and the caller may act as owner only after a later private `CLAIM_ACQUIRED`;
 - `team_dm` and `team_handoff` are directed mailbox interrupts that wake exactly one worker;
 - `team_group_send` is restricted to an immutable group audience and wakes its other members;
-- `team_say` appends public speech but does not wake every worker or consume an LLM turn;
-- public announcements are observed the next time a worker wakes for directed work;
-- the scheduler runs ready workers in concurrent waves and reports `idle`, `ready`, `running`, `waiting`, and `finished` separately.
+- `team_say` appends public speech but does not wake every worker or consume an LLM turn; `team_broadcast` does wake everyone, at the cost of being the one way a member can trigger a same-source (sequential) wave;
+- public announcements are observed the next time a worker wakes for directed work, or immediately if sent via `team_broadcast`;
+- the scheduler runs ready workers in concurrent waves — except a same-source wave, which runs sequentially — and reports `idle`, `ready`, `running`, `waiting`, and `finished` separately.
 
 The parent should use opaque unrelated member IDs, send the same initial objective to all members, and let them elect coordination and task order. `startMemberId` remains only as an advanced directed-start escape hatch.
 
@@ -66,6 +67,7 @@ The LLM-free suite verifies transport and isolation properties reproducibly:
 - game roles are shuffled and private; public evidence contains only hashes for private bodies.
 - the turn-ending protocol (`TurnState` in `src/turn-state.ts`) — accept/reject decisions, guard-text distinctions, and the queued-command set — fully covered without a live model, since it's pure: no session, no I/O.
 - poll tallying — clear winners, honest ties, quorum that excludes errored non-voters, that a poll locks in permanently on its first close, and that opening a new poll id without holding a matching claim is rejected (`test/poll.test.ts`).
+- same-source wave sequencing — a wave sharing one cause envelope runs member-by-member, each observing the prior members' committed claims; a wave from distinct envelopes, and a flush-promoted wave, are unaffected; `team_broadcast` wakes every teammate from a single envelope (`test/same-source-wave.test.ts`).
 
 These tests prove the generic runtime routes isolated adapters correctly. They do **not** by themselves prove that a particular LLM reasons independently. That requires a live-model run and transcript inspection. No live result should be reported as stronger evidence than its recorded session IDs, deliveries, wakes, and messages support.
 
