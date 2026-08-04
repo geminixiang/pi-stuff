@@ -556,7 +556,13 @@ export class TeamRuntime {
   private castVote(from: MemberId, pollId: string, choice: string): void {
     if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
     const isNewPoll = !this.polls.has(pollId);
-    if (isNewPoll && this.claims.get(pollId) !== from)
+    // A claim on the pollId reserves the id itself against duplicate polls
+    // for the same purpose — it does not require the claim holder
+    // specifically to cast the first vote. Once anyone holds the claim,
+    // any member may cast, including the very first vote; only a truly
+    // unclaimed pollId is blocked, since that's the only case a caller
+    // could otherwise spin up a brand-new poll unreserved.
+    if (isNewPoll && !this.claims.has(pollId))
       throw new Error(`must claim ${pollId} before opening a new poll with that id`);
     let votes = this.polls.get(pollId);
     if (!votes) {

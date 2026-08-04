@@ -105,6 +105,49 @@ test("opening a new poll without holding a claim on its pollId is rejected", asy
   );
 });
 
+test("a member other than the claim holder may still cast the first vote once the pollId is claimed", async () => {
+  // Reproduces a live-run bug: a member claims a pollId to reserve it (as
+  // doctrine (f) asks), announces it, but a teammate other than the
+  // claimant casts before the claimant does. Voting itself needs no
+  // arbitration (invariant 5's floor-control quality) — the claim only
+  // guards against a truly unclaimed pollId being spun up, not who casts
+  // first into an already-reserved one.
+  class Claimant {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "guesser" }];
+      if (turn.turn === 2) return [{ type: "send", to: "b", body: "go" }, { type: "wait" }];
+      const failure = turn.observations.find((message) => message.body.startsWith("COMMAND_FAILED"));
+      if (failure) throw new Error(`unexpected bounce: ${failure.body}`);
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class FirstVoter {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [
+        { type: "vote-cast", pollId: "guesser", choice: "x" },
+        { type: "send", to: "a", body: "voted" },
+        { type: "finish", summary: "voted" },
+      ];
+    }
+  }
+  const claimant = new Claimant();
+  const firstVoter = new FirstVoter();
+  const result = await new TeamRuntime(
+    "vote",
+    new Map([
+      [claimant.member.id, claimant],
+      [firstVoter.member.id, firstVoter],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(result.events.some((event) => event.type === "command.failed"), false);
+  assert.ok(result.events.some((event) => event.type === "poll.cast" && event.memberId === "b"));
+});
+
 test("a tied poll is reported honestly, never auto-broken", async () => {
   const members: TeamMember[] = [
     { id: "a", name: "A" },
