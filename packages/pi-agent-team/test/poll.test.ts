@@ -17,7 +17,9 @@ test("a poll tallies votes into a clear winner, visible live in the digest befor
     readonly sessionId = crypto.randomUUID();
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       coordinatorDigests.push(turn.digest);
-      if (turn.turn === 1)
+      // Opening a brand-new pollId requires holding a claim on it first.
+      if (turn.turn === 1) return [{ type: "claim", resource: "guesser" }];
+      if (turn.turn === 2)
         return [
           { type: "vote-cast", pollId: "guesser", choice: "x" },
           { type: "send", to: "b", body: "vote" },
@@ -35,6 +37,7 @@ test("a poll tallies votes into a clear winner, visible live in the digest befor
       private readonly choice: string,
     ) {}
     async act(): Promise<readonly TeamCommand[]> {
+      // Casting into an already-open poll needs no claim of its own.
       return [
         { type: "vote-cast", pollId: "guesser", choice: this.choice },
         { type: "send", to: "a", body: "voted" },
@@ -62,10 +65,44 @@ test("a poll tallies votes into a clear winner, visible live in the digest befor
   assert.match(closed!.body, /"kind":"winner"/);
   assert.match(closed!.body, /"choice":"x"/);
 
-  const preCloseDigest = coordinatorDigests[1];
+  const preCloseDigest = coordinatorDigests[2];
   const livePoll = preCloseDigest.polls.find((poll) => poll.pollId === "guesser");
   assert.deepEqual(livePoll?.tally, { x: 3, y: 1 });
   assert.deepEqual(livePoll?.missing, [], "all four had voted by the time the coordinator woke again");
+});
+
+test("opening a new poll without holding a claim on its pollId is rejected", async () => {
+  class NoClaim {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "vote-cast", pollId: "unclaimed", choice: "x" }];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class Other {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const noClaim = new NoClaim();
+  const other = new Other();
+  const result = await new TeamRuntime(
+    "vote",
+    new Map([
+      [noClaim.member.id, noClaim],
+      [other.member.id, other],
+    ]),
+  ).run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  assert.ok(result.events.some((event) => event.type === "command.failed"));
+  assert.equal(
+    result.publicTranscript.some((message) => message.body.startsWith("POLL_CLOSED")),
+    false,
+    "the poll was never actually opened",
+  );
 });
 
 test("a tied poll is reported honestly, never auto-broken", async () => {
@@ -77,7 +114,8 @@ test("a tied poll is reported honestly, never auto-broken", async () => {
     readonly member = members[0];
     readonly sessionId = crypto.randomUUID();
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
-      if (turn.turn === 1)
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
         return [
           { type: "vote-cast", pollId: "p", choice: "x" },
           { type: "send", to: "b", body: "your turn" },
@@ -113,13 +151,13 @@ test("closing an already-closed poll bounces via command.failed instead of recom
     readonly member = { id: "a", name: "A" };
     readonly sessionId = crypto.randomUUID();
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
-      if (turn.turn === 1)
-        return [
-          { type: "vote-cast", pollId: "p", choice: "x" },
-          { type: "vote-close", pollId: "p" },
-          { type: "vote-close", pollId: "p" },
-        ];
-      return [{ type: "finish", summary: "done" }];
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      return [
+        { type: "vote-cast", pollId: "p", choice: "x" },
+        { type: "vote-close", pollId: "p" },
+        { type: "vote-close", pollId: "p" },
+        { type: "finish", summary: "done" },
+      ];
     }
   }
   class Other {
@@ -186,7 +224,8 @@ test("an errored member drops out of quorum instead of being waited on forever",
     readonly member = { id: "good", name: "Good" };
     readonly sessionId = crypto.randomUUID();
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
-      if (turn.turn === 1) return [{ type: "send", to: "bad", body: "go" }, { type: "wait" }];
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2) return [{ type: "send", to: "bad", body: "go" }, { type: "wait" }];
       return [
         { type: "vote-cast", pollId: "p", choice: "x" },
         { type: "vote-close", pollId: "p" },

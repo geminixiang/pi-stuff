@@ -179,7 +179,9 @@ test("restricted group messages reach only members and wake each recipient once"
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
-      if (this.member.id === "a" && turn.turn === 1)
+      // Creating a group requires holding a claim on its channelId first.
+      if (this.member.id === "a" && turn.turn === 1) return [{ type: "claim", resource: "wolves" }];
+      if (this.member.id === "a" && turn.turn === 2)
         return [
           { type: "create-group", channelId: "wolves", name: "Wolves", members: ["b"] },
           { type: "group-send", channelId: "wolves", body: "secret plan" },
@@ -207,7 +209,9 @@ test("restricted group messages reach only members and wake each recipient once"
     new Map(agents.map((agent) => [agent.member.id, agent])),
   ).run({ channel: { kind: "public" }, body: "start" });
   assert.equal(result.settlement.kind, "completed");
-  assert.equal(result.restrictedMessages.length, 1);
+  // 2 restricted envelopes: the CLAIM_ACQUIRED notice for claiming "wolves",
+  // plus the one group-send carrying "secret plan".
+  assert.equal(result.restrictedMessages.length, 2);
   assert.equal(JSON.stringify(result).includes("secret plan"), false);
   assert.equal(
     seen

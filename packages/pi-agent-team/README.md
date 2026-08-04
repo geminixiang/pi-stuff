@@ -12,6 +12,7 @@ Production code knows nothing about relay counting, werewolf, expected answers, 
 - immutable restricted groups through `team_group_create` and `team_group_send`;
 - opaque atomic `team_claim` with explicit `team_release`, auto-released when the owner finishes or errors;
 - `team_vote_cast`/`team_vote_close`: a runtime-tallied poll, never self-declared by a member — a tie is reported honestly and never broken automatically, and the result names which expected voters never cast before close;
+- creating a group, or opening a brand-new poll id, requires already holding a claim on that exact id — enforced by the runtime, not left to doctrine, so two members racing to set up the same kind of thing in the same wave can't both succeed and leave a mess to reconcile;
 - observation-queue wake-up, `team_wait`, and `team_finish` — each ends a member's turn immediately (the adapter self-aborts the session) instead of letting a member re-poll the same tool dozens of times within one turn;
 - a control-plane digest (member states, held claims, own groups) supplied on every wake;
 - error degradation: a member whose turn fails becomes `errored`, announced publicly, and messages to it bounce back to the sender;
@@ -64,7 +65,7 @@ The LLM-free suite verifies transport and isolation properties reproducibly:
 - an external moderator and eight opaque players complete a hidden-role game entirely through generic messages;
 - game roles are shuffled and private; public evidence contains only hashes for private bodies.
 - the turn-ending protocol (`TurnState` in `src/turn-state.ts`) — accept/reject decisions, guard-text distinctions, and the queued-command set — fully covered without a live model, since it's pure: no session, no I/O.
-- poll tallying — clear winners, honest ties, quorum that excludes errored non-voters, and that a poll locks in permanently on its first close (`test/poll.test.ts`).
+- poll tallying — clear winners, honest ties, quorum that excludes errored non-voters, that a poll locks in permanently on its first close, and that opening a new poll id without holding a matching claim is rejected (`test/poll.test.ts`).
 
 These tests prove the generic runtime routes isolated adapters correctly. They do **not** by themselves prove that a particular LLM reasons independently. That requires a live-model run and transcript inspection. No live result should be reported as stronger evidence than its recorded session IDs, deliveries, wakes, and messages support.
 

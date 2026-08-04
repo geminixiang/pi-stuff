@@ -505,6 +505,9 @@ export class TeamRuntime {
 
   private castVote(from: MemberId, pollId: string, choice: string): void {
     if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
+    const isNewPoll = !this.polls.has(pollId);
+    if (isNewPoll && this.claims.get(pollId) !== from)
+      throw new Error(`must claim ${pollId} before opening a new poll with that id`);
     let votes = this.polls.get(pollId);
     if (!votes) {
       votes = new Map();
@@ -585,6 +588,8 @@ export class TeamRuntime {
     requestedMembers: readonly MemberId[],
   ): void {
     if (this.groups.has(channelId)) throw new Error(`Group already exists: ${channelId}`);
+    if (this.claims.get(channelId) !== creator)
+      throw new Error(`must claim ${channelId} before creating a group with that id`);
     const members = Object.freeze([...new Set([creator, ...requestedMembers])]);
     for (const member of members)
       if (!this.agents.has(member)) throw new Error(`Unknown group member: ${member}`);
