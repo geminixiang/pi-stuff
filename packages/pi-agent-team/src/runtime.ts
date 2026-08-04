@@ -66,6 +66,7 @@ export class TeamRuntime {
   private readonly claims = new Map<string, MemberId>();
   private readonly polls = new Map<string, Map<MemberId, string>>();
   private readonly closedPolls = new Map<string, PollResult>();
+  private readonly fullyCastPolls = new Set<string>();
   private readonly states = new Map<MemberId, TeamMemberState>();
   private activitySequence = 0;
   private auditHead = "0".repeat(64);
@@ -572,6 +573,27 @@ export class TeamRuntime {
     votes.set(from, choice);
     this.record("poll.cast", from, undefined, { pollId, choice });
     this.activity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    // Casting a vote is otherwise silent — unlike a claim or a group, it
+    // posts nothing observable. Without this, every eligible voter can cast
+    // and then WAIT, and nothing ever wakes anyone to notice the poll is
+    // ready to close: a live run showed exactly this, four members voting
+    // and then the whole team going quiescent with no poll ever closed.
+    // This notice states only the objective fact that every eligible member
+    // has now cast — never that anyone should close it — so the runtime
+    // stays rule-agnostic about when a poll's tally is meant to be final.
+    if (!this.fullyCastPolls.has(pollId)) {
+      const result = this.tallyPoll(pollId, votes);
+      if (result.missing.length === 0) {
+        this.fullyCastPolls.add(pollId);
+        this.post(
+          "runtime",
+          { kind: "public" },
+          `POLL_FULLY_CAST pollId=${JSON.stringify(pollId)} voters=${JSON.stringify(result.eligible)}`,
+          "interrupt",
+          "system",
+        );
+      }
+    }
   }
 
   /**

@@ -201,6 +201,89 @@ test("choice is an opaque exact-match string: two spellings of the same candidat
   assert.match(closed!.body, /"X":1/, "the differently-cased vote is a distinct, unmerged option");
 });
 
+test("once every eligible member has cast, the runtime wakes everyone instead of leaving the poll to rot unclosed", async () => {
+  // Reproduces a live-run deadlock: four members claimed and voted, then
+  // every one of them called team_wait without anyone sending a single
+  // message about it (unlike the other tests in this file, none of these
+  // agents ever directly notifies a teammate). Casting a vote is otherwise
+  // silent — unlike a claim or a group, it posts nothing observable — so
+  // with nothing to wake anyone, the whole team went quiescent with the
+  // poll never closed. The fix: once the last eligible voter casts, the
+  // runtime posts a POLL_FULLY_CAST notice that wakes everyone, giving
+  // someone a chance to close it.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+    { id: "d", name: "D" },
+  ];
+  class Claimant {
+    readonly member = members[0];
+    readonly sessionId = crypto.randomUUID();
+    private voted = false;
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_FULLY_CAST")))
+        return [{ type: "vote-close", pollId: "p" }, { type: "finish", summary: "closed" }];
+      if (!this.voted) {
+        if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+        this.voted = true;
+        return [{ type: "vote-cast", pollId: "p", choice: "x" }, { type: "wait" }];
+      }
+      return [{ type: "wait" }];
+    }
+  }
+  class Voter {
+    readonly sessionId = crypto.randomUUID();
+    private voted = false;
+    constructor(
+      readonly member: TeamMember,
+      private readonly choice: string,
+    ) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      // The wave's execution order isn't fixed by agent-map insertion order,
+      // so a voter's first attempt can race ahead of the claimant's claim
+      // and bounce; retry on the resulting COMMAND_FAILED rather than
+      // assuming the first attempt landed.
+      const bounced = turn.observations.some(
+        (message) => message.body.startsWith("COMMAND_FAILED") && message.body.includes("vote-cast"),
+      );
+      if (!this.voted || bounced) {
+        this.voted = true;
+        return [{ type: "vote-cast", pollId: "p", choice: this.choice }, { type: "wait" }];
+      }
+      return [{ type: "wait" }];
+    }
+  }
+  const agents = [
+    new Claimant(),
+    new Voter(members[1], "x"),
+    new Voter(members[2], "x"),
+    new Voter(members[3], "y"),
+  ];
+  const result = await new TeamRuntime(
+    "silent-quorum",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "start" });
+
+  assert.equal(
+    result.settlement.kind,
+    "completed",
+    "without the fix this deadlocks quiescent with the poll never closed",
+  );
+  const fullyCast = result.publicTranscript.find((message) =>
+    message.body.startsWith("POLL_FULLY_CAST"),
+  );
+  assert.ok(fullyCast, "runtime announces once every eligible member has cast");
+  const closed = result.publicTranscript.find((message) => message.body.startsWith("POLL_CLOSED"));
+  assert.ok(closed, "the notice gave someone the chance to close the poll");
+  assert.match(closed!.body, /"x":3/);
+  assert.match(closed!.body, /"y":1/);
+});
+
 test("a tied poll is reported honestly, never auto-broken", async () => {
   const members: TeamMember[] = [
     { id: "a", name: "A" },
