@@ -89,13 +89,14 @@ export default function agentTeam(pi: ExtensionAPI): void {
           update();
         },
       });
-      const to = params.startMemberId?.trim() || "all";
-      if (to !== "all" && !agents.has(to)) throw new Error(`Unknown startMemberId: ${to}`);
+      const startMemberId = params.startMemberId?.trim() || "all";
+      if (startMemberId !== "all" && !agents.has(startMemberId))
+        throw new Error(`Unknown startMemberId: ${startMemberId}`);
       try {
         const result = await runtime.run(
-          to === "all"
+          startMemberId === "all"
             ? { channel: { kind: "public" }, body: params.initialMessage }
-            : { channel: { kind: "direct", memberId: to }, body: params.initialMessage },
+            : { channel: { kind: "direct", memberId: startMemberId }, body: params.initialMessage },
           signal,
         );
         return {

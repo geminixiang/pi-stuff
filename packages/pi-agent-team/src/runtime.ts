@@ -127,7 +127,7 @@ export class TeamRuntime {
     const waveConcurrency = Math.max(1, this.options.waveConcurrency ?? 8);
     let exhausted = false;
     while (!signal?.aborted) {
-      if (!this.ready.size && !this.flushStarved()) break;
+      if (!this.ready.size && !this.promoteStarvedMembers()) break;
       if (this.totalTurns() >= maxTurns) {
         exhausted = true;
         break;
@@ -137,9 +137,11 @@ export class TeamRuntime {
         (left, right) => stableRank(rankSeed, left) - stableRank(rankSeed, right),
       );
       this.ready.clear();
-      const cause = this.readyCause.get(wave[0]);
+      const waveCause = this.readyCause.get(wave[0]);
       const sameSource =
-        wave.length > 1 && cause !== undefined && wave.every((id) => this.readyCause.get(id) === cause);
+        wave.length > 1 &&
+        waveCause !== undefined &&
+        wave.every((id) => this.readyCause.get(id) === waveCause);
       if (sameSource) {
         for (const id of wave) await this.wake(id, signal);
       } else {
@@ -207,8 +209,8 @@ export class TeamRuntime {
               sequence: envelope.sequence,
               from: envelope.from,
               channelKind: envelope.channel.kind,
-              audienceHash: sha([...envelope.audience].sort().join("\0")),
-              bodyHash: sha(envelope.body),
+              audienceHash: sha256([...envelope.audience].sort().join("\0")),
+              bodyHash: sha256(envelope.body),
             }),
           ),
       ),
@@ -223,7 +225,7 @@ export class TeamRuntime {
    * passive observations so no one settles with unread mail. Repeated flush
    * cycles are bounded by maxTurns.
    */
-  private flushStarved(): boolean {
+  private promoteStarvedMembers(): boolean {
     let promoted = false;
     for (const [id, queue] of this.observations) {
       if (!queue.length || !this.runnable(id) || this.flushing.has(id)) continue;
@@ -268,7 +270,7 @@ export class TeamRuntime {
       await this.reactionDelay(parentSignal);
     } catch (cause) {
       if (parentSignal?.aborted) throw cause;
-      this.degrade(memberId, cause);
+      this.markErrored(memberId, cause);
       return;
     }
     const agent = this.agents.get(memberId)!;
@@ -278,14 +280,14 @@ export class TeamRuntime {
     for (const message of observations)
       this.record("message.observed", memberId, message.id, {
         channelId: message.channel.id,
-        bodyHash: sha(message.body),
+        bodyHash: sha256(message.body),
       });
     this.record(flush ? "member.flushWoke" : "member.woke", memberId, undefined, {
       turn,
       observationIds: observations.map((message) => message.id),
       sessionId: agent.sessionId,
     });
-    this.activity(
+    this.emitActivity(
       memberId,
       "wake",
       `turn ${turn} · observed ${observations.length}${flush ? " (final flush)" : ""}`,
@@ -336,9 +338,9 @@ export class TeamRuntime {
       ]);
       const claim = commands.find((command) => command.type === "claim");
       if (claim) {
-        this.apply(memberId, claim);
+        this.applyCommand(memberId, claim);
         if (commands.length > 1)
-          this.activity(
+          this.emitActivity(
             memberId,
             "wait",
             `claim fence discarded ${commands.length - 1} speculative action${commands.length === 2 ? "" : "s"}`,
@@ -347,7 +349,7 @@ export class TeamRuntime {
           );
       } else {
         const budget = Math.max(1, this.options.maxCommandsPerTurn ?? 16);
-        for (const command of commands.slice(0, budget)) this.apply(memberId, command);
+        for (const command of commands.slice(0, budget)) this.applyCommand(memberId, command);
         if (commands.length > budget)
           this.post(
             "runtime",
@@ -361,7 +363,7 @@ export class TeamRuntime {
         this.states.set(memberId, "waiting");
     } catch (cause) {
       if (parentSignal?.aborted) throw cause;
-      this.degrade(memberId, cause);
+      this.markErrored(memberId, cause);
     } finally {
       clearTimeout(timeout);
       parentSignal?.removeEventListener("abort", relayAbort);
@@ -369,13 +371,13 @@ export class TeamRuntime {
   }
 
   /** A member whose turn failed becomes terminal; the team routes around it. */
-  private degrade(memberId: MemberId, cause: unknown): void {
+  private markErrored(memberId: MemberId, cause: unknown): void {
     const message = cause instanceof Error ? cause.message : String(cause);
     this.errored.set(memberId, message);
     this.states.set(memberId, "errored");
     this.ready.delete(memberId);
     this.record("member.errored", memberId, undefined, { error: message });
-    this.activity(memberId, "error", message, { kind: "direct", memberId }, [memberId]);
+    this.emitActivity(memberId, "error", message, { kind: "direct", memberId }, [memberId]);
     this.releaseClaims(memberId, "member-errored");
     this.post(
       "runtime",
@@ -386,9 +388,9 @@ export class TeamRuntime {
     );
   }
 
-  private apply(from: MemberId, command: TeamCommand): void {
+  private applyCommand(from: MemberId, command: TeamCommand): void {
     try {
-      this.applyCommand(from, command);
+      this.executeCommand(from, command);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.record("command.failed", from, undefined, { commandType: command.type, error: message });
@@ -402,16 +404,16 @@ export class TeamRuntime {
     }
   }
 
-  private applyCommand(from: MemberId, command: TeamCommand): void {
+  private executeCommand(from: MemberId, command: TeamCommand): void {
     if (command.type === "wait") {
-      this.activity(from, "wait", "WAIT", { kind: "direct", memberId: from }, [from]);
+      this.emitActivity(from, "wait", "WAIT", { kind: "direct", memberId: from }, [from]);
       return;
     }
     if (command.type === "finish") {
       this.finished.set(from, command.summary);
       this.states.set(from, "finished");
-      this.record("member.finished", from, undefined, { summaryHash: sha(command.summary) });
-      this.activity(from, "finish", command.summary, { kind: "direct", memberId: from }, [from]);
+      this.record("member.finished", from, undefined, { summaryHash: sha256(command.summary) });
+      this.emitActivity(from, "finish", command.summary, { kind: "direct", memberId: from }, [from]);
       this.releaseClaims(from, "member-finished");
       return;
     }
@@ -503,7 +505,7 @@ export class TeamRuntime {
     if (!owner) {
       this.claims.set(resource, from);
       this.record("member.claimed", from, undefined, { resource });
-      this.activity(from, "claim", `claimed ${resource}`, { kind: "direct", memberId: from }, [
+      this.emitActivity(from, "claim", `claimed ${resource}`, { kind: "direct", memberId: from }, [
         from,
       ]);
       this.post(
@@ -517,7 +519,7 @@ export class TeamRuntime {
     }
     if (owner !== from) {
       this.record("member.claimRejected", from, undefined, { resource, owner });
-      this.activity(
+      this.emitActivity(
         from,
         "claim",
         `${resource} already claimed by ${owner}`,
@@ -542,7 +544,7 @@ export class TeamRuntime {
   private releaseClaim(resource: string, owner: MemberId, reason: string): void {
     this.claims.delete(resource);
     this.record("claim.released", owner, undefined, { resource, reason });
-    this.activity(owner, "claim", `released ${resource}`, { kind: "direct", memberId: owner }, [
+    this.emitActivity(owner, "claim", `released ${resource}`, { kind: "direct", memberId: owner }, [
       owner,
     ]);
     this.post(
@@ -572,7 +574,7 @@ export class TeamRuntime {
     }
     votes.set(from, choice);
     this.record("poll.cast", from, undefined, { pollId, choice });
-    this.activity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
     // Casting a vote is otherwise silent — unlike a claim or a group, it
     // posts nothing observable. Without this, every eligible voter can cast
     // and then WAIT, and nothing ever wakes anyone to notice the poll is
@@ -617,7 +619,7 @@ export class TeamRuntime {
       missing: result.missing,
       outcome: result.outcome,
     });
-    this.activity(
+    this.emitActivity(
       from,
       "vote",
       `closed ${pollId}: ${describePollOutcome(result.outcome)}`,
@@ -674,9 +676,9 @@ export class TeamRuntime {
     this.groups.set(channelId, group);
     this.record("channel.created", creator, undefined, {
       channelId,
-      audienceHash: sha([...members].sort().join("\0")),
+      audienceHash: sha256([...members].sort().join("\0")),
     });
-    this.activity(
+    this.emitActivity(
       creator,
       "channel",
       `created group ${name}`,
@@ -705,7 +707,6 @@ export class TeamRuntime {
       sentAt: Date.now(),
     });
     this.envelopes.push(envelope);
-    const restricted = channel.kind !== "public";
     this.record(
       "message.posted",
       from === "user" || from === "runtime" ? undefined : from,
@@ -715,17 +716,17 @@ export class TeamRuntime {
         channelId: channel.id,
         purpose,
         wake,
-        audienceHash: sha([...audience].sort().join("\0")),
-        bodyHash: sha(body),
+        audienceHash: sha256([...audience].sort().join("\0")),
+        bodyHash: sha256(body),
       },
     );
-    this.activity(from, "message", body, target, audience, body, restricted);
+    this.emitActivity(from, "message", body, target, audience, body);
     for (const recipient of audience) {
       if (recipient === from || !this.runnable(recipient)) continue;
       this.observations.get(recipient)!.push(envelope);
       this.record("message.enqueued", recipient, envelope.id, {
         channelId: channel.id,
-        bodyHash: sha(body),
+        bodyHash: sha256(body),
       });
       if (wake === "interrupt") {
         this.ready.add(recipient);
@@ -797,7 +798,7 @@ export class TeamRuntime {
       data,
       previousHash: this.auditHead,
     });
-    const hash = sha(payload);
+    const hash = sha256(payload);
     this.events.push(
       Object.freeze({
         sequence,
@@ -812,14 +813,13 @@ export class TeamRuntime {
     this.auditHead = hash;
   }
 
-  private activity(
+  private emitActivity(
     memberId: PrincipalId,
     kind: TeamActivity["kind"],
     text: string,
     channel: ChannelTarget,
     targetIds: readonly MemberId[],
     body?: string,
-    restricted = channel.kind !== "public",
   ): void {
     this.options.onActivity?.(
       Object.freeze({
@@ -827,7 +827,7 @@ export class TeamRuntime {
         memberId,
         kind,
         text,
-        visibility: restricted ? "restricted" : "public",
+        visibility: channel.kind !== "public" ? "restricted" : "public",
         channel,
         targetIds: Object.freeze([...targetIds]),
         body,
@@ -850,12 +850,12 @@ function directChannelId(from: PrincipalId, to: MemberId): string {
   return `direct:${[from, to].sort().join(":")}`;
 }
 
-function sha(value: string): string {
+function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function stableRank(teamId: string, memberId: string): number {
-  return Number.parseInt(sha(`${teamId}:${memberId}`).slice(0, 12), 16);
+function stableRank(seed: string, memberId: string): number {
+  return Number.parseInt(sha256(`${seed}:${memberId}`).slice(0, 12), 16);
 }
 
 export function verifyAudit(events: readonly AuditEvent[]): boolean {
@@ -871,7 +871,7 @@ export function verifyAudit(events: readonly AuditEvent[]): boolean {
       data: event.data,
       previousHash: event.previousHash,
     });
-    if (sha(payload) !== event.hash) return false;
+    if (sha256(payload) !== event.hash) return false;
     previousHash = event.hash;
   }
   return true;

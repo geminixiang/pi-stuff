@@ -1,10 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TeamActivity, TeamMemberState } from "./domain.js";
-import { accentCode } from "./member-colors.js";
+import { accentWrap } from "./member-colors.js";
 import type { TeamDisplayDetails } from "./team-chat-view.js";
-
-const ESC = "\x1b";
 
 type Role = "speaking" | "addressed" | "finished" | "errored" | "idle";
 
@@ -44,26 +42,25 @@ function lastMemberMessage(
 
 /** A speech bubble for the most recent utterance, sitting above the roster. */
 function renderBubble(
-  activity: TeamActivity | undefined,
-  member: { id: string; name: string } | undefined,
+  spoken: { activity: TeamActivity; member: { id: string; name: string } } | undefined,
   theme: Theme,
   width: number,
 ): string[] {
-  if (!activity || !member) return [];
+  if (!spoken) return [];
+  const { activity, member } = spoken;
   const bubbleWidth = Math.max(20, Math.min(width, 64));
   const innerWidth = bubbleWidth - 4;
-  const code = accentCode(member.id);
-  const color = (text: string) => `${ESC}[38;5;${code}m${text}${ESC}[39m`;
+  const accent = (text: string) => accentWrap(member.id, text);
   const title = theme.bold(member.name);
   const dashes = Math.max(1, bubbleWidth - 5 - visibleWidth(member.name));
-  const top = color(`╭─ ${title} ${"─".repeat(dashes)}╮`);
-  const bottom = color(`╰${"─".repeat(bubbleWidth - 2)}╯`);
+  const top = accent(`╭─ ${title} ${"─".repeat(dashes)}╮`);
+  const bottom = accent(`╰${"─".repeat(bubbleWidth - 2)}╯`);
   const bodyLines = wrapTextWithAnsi(theme.fg("text", activity.body ?? activity.text), innerWidth);
   const capped = bodyLines.slice(0, 3);
   if (bodyLines.length > capped.length) capped[capped.length - 1] = `${capped[capped.length - 1]}…`;
   const middle = capped.map((line) => {
     const pad = " ".repeat(Math.max(0, innerWidth - visibleWidth(line)));
-    return `${color("│")} ${line}${pad} ${color("│")}`;
+    return `${accent("│")} ${line}${pad} ${accent("│")}`;
   });
   return [top, ...middle, bottom];
 }
@@ -74,7 +71,7 @@ function renderBubble(
  * the end-user view — the verbose blow-by-blow narration lives in the
  * tool-result card (TeamChatView) for debugging, not here.
  */
-function classify(details: TeamDisplayDetails): Map<string, Role> {
+function classifyRoles(details: TeamDisplayDetails): Map<string, Role> {
   const roles = new Map<string, Role>();
   const states: Readonly<Record<string, TeamMemberState>> = details.progress?.states ?? {};
   const directed = lastDirectedMessage(details.activities);
@@ -93,10 +90,8 @@ function classify(details: TeamDisplayDetails): Map<string, Role> {
 }
 
 function chip(member: { id: string; name: string }, role: Role, theme: Theme): string {
-  const code = accentCode(member.id);
-  const bright = (text: string) => `${ESC}[38;5;${code}m${text}${ESC}[39m`;
-  if (role === "speaking") return `${bright(theme.bold(`◉ ${member.name}`))}`;
-  if (role === "addressed") return bright(`○ ${member.name}`);
+  if (role === "speaking") return accentWrap(member.id, theme.bold(`◉ ${member.name}`));
+  if (role === "addressed") return accentWrap(member.id, `○ ${member.name}`);
   if (role === "finished") return theme.fg("dim", `✓ ${member.name}`);
   if (role === "errored") return theme.fg("error", `✗ ${member.name}`);
   return theme.fg("dim", `· ${member.name}`);
@@ -117,20 +112,17 @@ export class TeamRosterWidget implements Component {
   render(width: number): string[] {
     const { details, theme } = this;
     if (!details.members.length) return [];
-    const roles = classify(details);
-    const line = details.members.map((member) => chip(member, roles.get(member.id) ?? "idle", theme)).join("   ");
+    const roles = classifyRoles(details);
+    const rosterLine = details.members
+      .map((member) => chip(member, roles.get(member.id) ?? "idle", theme))
+      .join("   ");
     const turns = details.progress?.turns ?? 0;
     const finished = details.progress?.finished.length ?? 0;
     const header = theme.fg(
       "muted",
       `agent team · ${finished}/${details.members.length} finished · ${turns} turns`,
     );
-    const spoken = lastMemberMessage(details);
-    const bubble = renderBubble(spoken?.activity, spoken?.member, theme, Math.max(1, width));
-    return [
-      header,
-      ...bubble,
-      ...wrapTextWithAnsi(line, Math.max(1, width)),
-    ];
+    const bubble = renderBubble(lastMemberMessage(details), theme, Math.max(1, width));
+    return [header, ...bubble, ...wrapTextWithAnsi(rosterLine, Math.max(1, width))];
   }
 }

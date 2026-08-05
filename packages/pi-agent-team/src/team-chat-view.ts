@@ -15,12 +15,17 @@ export interface TeamChatViewOptions {
   isPartial: boolean;
 }
 
-function bar(memberId: string): string {
-  return accentWrap(memberId, "┃");
-}
-
 interface ChatRow {
   render(width: number): string[];
+}
+
+function speakerDisplayName(
+  memberId: string,
+  members: readonly { id: string; name: string }[],
+): string {
+  if (memberId === "user") return "You";
+  if (memberId === "runtime") return "Runtime";
+  return members.find((member) => member.id === memberId)?.name ?? memberId;
 }
 
 /** message/finish/error activities: a full bubble with a speaker-colored accent bar and markdown body. */
@@ -28,17 +33,10 @@ class MessageRow implements ChatRow {
   private readonly markdown: Markdown;
   private readonly headerLine: string;
   private readonly accentBar: string;
-  private lastTheme?: Theme;
 
-  constructor(
-    private readonly item: TeamActivity,
-    members: readonly { id: string; name: string }[],
-    private theme: Theme,
-  ) {
-    const member = members.find((candidate) => candidate.id === item.memberId);
-    const speakerName =
-      item.memberId === "user" ? "You" : item.memberId === "runtime" ? "Runtime" : (member?.name ?? item.memberId);
-    this.accentBar = bar(item.memberId);
+  constructor(item: TeamActivity, members: readonly { id: string; name: string }[], theme: Theme) {
+    const speakerName = speakerDisplayName(item.memberId, members);
+    this.accentBar = accentWrap(item.memberId, "┃");
     const tag =
       item.kind === "finish"
         ? theme.fg("success", "✓ finished")
@@ -47,16 +45,10 @@ class MessageRow implements ChatRow {
           : channelTag(item, theme);
     this.headerLine = `${accentWrap(item.memberId, theme.bold(speakerName))} ${theme.fg("dim", `(${item.memberId})`)}  ${tag}`;
     this.markdown = new Markdown(item.body ?? item.text, 0, 0, getMarkdownTheme());
-    this.lastTheme = theme;
   }
 
   render(width: number): string[] {
-    if (this.theme !== this.lastTheme) {
-      this.markdown.invalidate();
-      this.lastTheme = this.theme;
-    }
-    const inner = Math.max(1, width - 2);
-    const bodyLines = this.markdown.render(inner);
+    const bodyLines = this.markdown.render(Math.max(1, width - 2));
     return [`${this.accentBar} ${this.headerLine}`, ...bodyLines.map((line) => `${this.accentBar} ${line}`)];
   }
 }
@@ -66,9 +58,7 @@ class CompactRow implements ChatRow {
   private readonly line: string;
 
   constructor(item: TeamActivity, members: readonly { id: string; name: string }[], theme: Theme) {
-    const member = members.find((candidate) => candidate.id === item.memberId);
-    const speakerName =
-      item.memberId === "user" ? "You" : item.memberId === "runtime" ? "Runtime" : (member?.name ?? item.memberId);
+    const speakerName = speakerDisplayName(item.memberId, members);
     this.line =
       item.kind === "claim"
         ? `  ${theme.fg("muted", "⚙")} ${accentWrap(item.memberId, speakerName)} ${theme.fg("dim", item.text)}`
@@ -148,10 +138,10 @@ export class TeamChatView implements Component {
       "",
     ];
 
-    const visibleIndices = this.options.expanded
+    const visibleIndices = options.expanded
       ? [...details.activities.keys()]
       : selectChatIndices(details.activities);
-    if (!this.options.expanded && details.activities.length > visibleIndices.length)
+    if (!options.expanded && details.activities.length > visibleIndices.length)
       lines.push(
         theme.fg(
           "muted",

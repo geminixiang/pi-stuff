@@ -14,7 +14,6 @@ interface SessionLike {
   readonly sessionId: string;
   prompt(text: string): Promise<void>;
   abort(): Promise<void>;
-  getLastAssistantText(): string | undefined;
   dispose(): Promise<void> | void;
 }
 
@@ -52,7 +51,8 @@ export class PiTeamAgent implements TeamAgent {
     }
     if (signal.aborted) throw signal.reason;
     if (this.turnState.queued.length) return Object.freeze([...this.turnState.queued]);
-    return parseCommands(session.getLastAssistantText() ?? "");
+    // A turn that ends with no team tool call is leniently treated as waiting.
+    return Object.freeze([{ type: "wait" as const }]);
   }
 
   async close(): Promise<void> {
@@ -89,7 +89,7 @@ export class PiTeamAgent implements TeamAgent {
         description: "Post public speech to the team chat. This does not wake waiting peers.",
         parameters: Type.Object({ body: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { body: string }) =>
-          this.handle({ type: "say", body: params.body }, "spoken publicly"),
+          this.queueCommand({ type: "say", body: params.body }, "spoken publicly"),
       },
       {
         name: "team_broadcast",
@@ -98,7 +98,7 @@ export class PiTeamAgent implements TeamAgent {
           "Post public speech that wakes every teammate at once, unlike team_say. Use only when everyone genuinely needs to respond to this right now (e.g. you asked all of them a question); overuse defeats the point.",
         parameters: Type.Object({ body: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { body: string }) =>
-          this.handle({ type: "broadcast", body: params.body }, "broadcast, waking everyone"),
+          this.queueCommand({ type: "broadcast", body: params.body }, "broadcast, waking everyone"),
       },
       {
         name: "team_dm",
@@ -115,7 +115,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { to: string; body: string }) =>
-          this.handle({ type: "send", to: params.to, body: params.body }, "private message queued"),
+          this.queueCommand({ type: "send", to: params.to, body: params.body }, "private message queued"),
       },
       {
         name: "team_group_create",
@@ -137,7 +137,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { channelId: string; name: string; members: string[] }) =>
-          this.handle(
+          this.queueCommand(
             {
               type: "create-group",
               channelId: params.channelId,
@@ -156,7 +156,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { channelId: string; body: string }) =>
-          this.handle(
+          this.queueCommand(
             { type: "group-send", channelId: params.channelId, body: params.body },
             "group message queued",
           ),
@@ -176,7 +176,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { to: string; body: string }) =>
-          this.handle({ type: "handoff", to: params.to, body: params.body }, "handed off"),
+          this.queueCommand({ type: "handoff", to: params.to, body: params.body }, "handed off"),
       },
       {
         name: "team_claim",
@@ -185,7 +185,7 @@ export class PiTeamAgent implements TeamAgent {
           "Atomically claim an opaque resource. This must be the only action in the response.",
         parameters: Type.Object({ resource: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { resource: string }) =>
-          this.handle(
+          this.queueCommand(
             { type: "claim", resource: params.resource },
             "claim queued; stop now and wait for the runtime result",
           ),
@@ -196,7 +196,7 @@ export class PiTeamAgent implements TeamAgent {
         description: "Release a resource you currently own so others can claim it.",
         parameters: Type.Object({ resource: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { resource: string }) =>
-          this.handle({ type: "release", resource: params.resource }, "release queued"),
+          this.queueCommand({ type: "release", resource: params.resource }, "release queued"),
       },
       {
         name: "team_vote_cast",
@@ -214,7 +214,7 @@ export class PiTeamAgent implements TeamAgent {
           { additionalProperties: false },
         ),
         execute: async (_id, params: { pollId: string; choice: string }) =>
-          this.handle(
+          this.queueCommand(
             { type: "vote-cast", pollId: params.pollId, choice: params.choice },
             "vote cast",
           ),
@@ -226,14 +226,14 @@ export class PiTeamAgent implements TeamAgent {
           "Tally an open poll and have the runtime publicly announce the result. Anyone may call this; the runtime computes the tally, so it can never be miscounted or self-declared. Ties are reported honestly, never broken automatically.",
         parameters: Type.Object({ pollId: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { pollId: string }) =>
-          this.handle({ type: "vote-close", pollId: params.pollId }, "poll closed; see the public result"),
+          this.queueCommand({ type: "vote-close", pollId: params.pollId }, "poll closed; see the public result"),
       },
       {
         name: "team_wait",
         label: "Wait",
         description: "End your turn without acting; you will wake on the next interrupt.",
         parameters: Type.Object({}, { additionalProperties: false }),
-        execute: async () => this.handle({ type: "wait" }, "waiting"),
+        execute: async () => this.queueCommand({ type: "wait" }, "waiting"),
       },
       {
         name: "team_finish",
@@ -241,7 +241,7 @@ export class PiTeamAgent implements TeamAgent {
         description: "Mark your work finished. This is not a public message.",
         parameters: Type.Object({ summary: Type.String() }, { additionalProperties: false }),
         execute: async (_id, params: { summary: string }) =>
-          this.handle({ type: "finish", summary: params.summary }, "finished"),
+          this.queueCommand({ type: "finish", summary: params.summary }, "finished"),
       },
     ];
     const created = await createAgentSession({
@@ -258,10 +258,10 @@ export class PiTeamAgent implements TeamAgent {
     return created.session;
   }
 
-  private handle(command: TeamCommand, confirmation: string) {
+  private queueCommand(command: TeamCommand, confirmation: string) {
     const { text, endsTurn } = this.turnState.apply(command, confirmation);
     if (endsTurn) void this.session?.abort().catch(() => {});
-    return toolText(text);
+    return { content: [{ type: "text" as const, text }], details: {} };
   }
 }
 
@@ -322,11 +322,3 @@ function formatObservation(message: MessageEnvelope): string {
   return `[${message.id}] ${channel} · ${message.from}: ${message.body}`;
 }
 
-/** A turn that ends with no team tool call is leniently treated as waiting. */
-export function parseCommands(_text: string): readonly TeamCommand[] {
-  return [{ type: "wait" }];
-}
-
-function toolText(text: string) {
-  return { content: [{ type: "text" as const, text }], details: {} };
-}
