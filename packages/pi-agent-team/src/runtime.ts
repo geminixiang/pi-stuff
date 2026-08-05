@@ -580,7 +580,19 @@ export class TeamRuntime {
       return;
     }
     if (command.type === "say") {
-      this.post(from, { kind: "public" }, command.body, "passive", "speech");
+      // A mention names who should reply: the speech stays public and
+      // passive for everyone else, but each mentioned member is woken as if
+      // interrupted. A self-mention is dropped rather than bounced — the
+      // speaker is already awake, and failing the whole public message over
+      // a meaningless wake would lose real speech. A mention of a terminal
+      // member bounces (via assertDeliverable) before anything is posted:
+      // silently not waking them would leave the speaker awaiting a reply
+      // that can never come.
+      const mentions = [
+        ...new Set((command.to ?? []).map((candidate) => this.resolveMemberId(candidate))),
+      ].filter((memberId) => memberId !== from);
+      for (const memberId of mentions) this.assertDeliverable(memberId);
+      this.post(from, { kind: "public" }, command.body, "passive", "speech", mentions);
       return;
     }
     if (command.type === "broadcast") {
@@ -853,6 +865,7 @@ export class TeamRuntime {
     body: string,
     wake: WakePolicy,
     purpose: MessageEnvelope["purpose"],
+    mentions: readonly MemberId[] = [],
   ): void {
     const { channel, audience } = this.resolveChannel(from, target);
     const envelope: MessageEnvelope = Object.freeze({
@@ -863,6 +876,7 @@ export class TeamRuntime {
       audience: Object.freeze(audience),
       body,
       wake,
+      mentions: Object.freeze([...mentions]),
       purpose,
       sentAt: Date.now(),
     });
@@ -880,23 +894,29 @@ export class TeamRuntime {
         bodyHash: sha256(body),
       },
     );
-    this.emitActivity(from, "message", body, target, audience, body);
+    this.emitActivity(from, "message", body, target, audience, body, envelope.mentions);
     for (const recipient of audience) {
       if (recipient === from || !this.runnable(recipient)) continue;
+      // The wake policy is per-recipient: a channel-level interrupt reaches
+      // its whole audience, while a passive public say still interrupts the
+      // members it explicitly mentions — everyone else receives it passively.
+      const interrupts = wake === "interrupt" || envelope.mentions.includes(recipient);
       // First-turn barrier: public passive speech (team_say) posted while
       // this recipient is still an undrafted opening-wave member is held
       // back from its regular mailbox and revealed only once every opening-
       // wave member has drafted (see revealOpeningWaveDrafts). Direct,
-      // handoff, and broadcast messages are never held back — those are
-      // the sender explicitly choosing to reach this recipient right now,
-      // not a passive conclusion that could anchor an undrafted first take.
-      if (wake === "interrupt") {
+      // handoff, broadcast, and mentioned recipients are never held back —
+      // those are the sender explicitly choosing to reach this recipient
+      // right now, not a passive conclusion that could anchor an undrafted
+      // first take.
+      if (interrupts) {
         // A directed/group/broadcast interrupt can depend on passive public
         // context sent immediately before it. Reveal that context first so
         // the recipient never observes a later prompt before its premise.
         this.liftOpeningBarrierForInterrupt(recipient);
       }
       const holdBackForReveal =
+        !interrupts &&
         wake === "passive" &&
         channel.kind === "public" &&
         this.openingWaveMembers?.has(recipient) === true &&
@@ -906,13 +926,13 @@ export class TeamRuntime {
       );
       // Lifting can merge two queues; sorting after the new interrupt also
       // makes the global ordering guarantee explicit at the delivery seam.
-      if (wake === "interrupt")
+      if (interrupts)
         this.observations.get(recipient)!.sort((left, right) => left.sequence - right.sequence);
       this.record("message.enqueued", recipient, envelope.id, {
         channelId: channel.id,
         bodyHash: sha256(body),
       });
-      if (wake === "interrupt") {
+      if (interrupts) {
         this.ready.add(recipient);
         this.states.set(recipient, "ready");
         this.readyCause.set(recipient, envelope.id);
@@ -1004,6 +1024,7 @@ export class TeamRuntime {
     channel: ChannelTarget,
     targetIds: readonly MemberId[],
     body?: string,
+    mentions?: readonly MemberId[],
   ): void {
     this.options.onActivity?.(
       Object.freeze({
@@ -1014,6 +1035,7 @@ export class TeamRuntime {
         visibility: channel.kind !== "public" ? "restricted" : "public",
         channel,
         targetIds: Object.freeze([...targetIds]),
+        mentions: mentions?.length ? Object.freeze([...mentions]) : undefined,
         body,
       }),
     );

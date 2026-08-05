@@ -295,3 +295,55 @@ test("a wave woken by distinct envelopes (different direct messages) is unaffect
   assert.equal(result.settlement.kind, "completed");
 });
 
+test("a mention in a public say lifts the opening barrier for its recipient like an interrupt", async () => {
+  // The conversational form this runtime now encourages: one public
+  // say(context) mentioning the expected next speaker, instead of a
+  // passive say followed by a DM restating it. The mentioned recipient
+  // must wake with the full public message — never a held-back hole where
+  // its premise should be.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const observed = new Map<string, TeamTurn[]>();
+  class MentioningAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      observed.set(this.member.id, [...(observed.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (turn.turn === 1) {
+        const peer = this.member.id === "a" ? "b" : "a";
+        return [
+          { type: "say", body: `context:${this.member.id}` },
+          { type: "say", body: `ping:${this.member.id}`, to: [peer] },
+          { type: "wait" },
+        ];
+      }
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = members.map((member) => new MentioningAgent(member));
+  await new TeamRuntime(
+    "mention conversation",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "objective" });
+
+  for (const turns of observed.values()) {
+    for (const turn of turns) {
+      const peerPing = turn.observations.find((message) => message.body.startsWith("ping:"));
+      if (!peerPing) continue;
+      const sender = peerPing.body.slice("ping:".length);
+      assert.ok(
+        turn.observations.some((message) => message.body === `context:${sender}`),
+        "a mention must reveal the earlier public context in the same observation batch",
+      );
+      assert.deepEqual(
+        turn.observations.map((message) => message.sequence),
+        [...turn.observations]
+          .sort((left, right) => left.sequence - right.sequence)
+          .map((message) => message.sequence),
+        "mixed held-back and ordinary observations must preserve envelope sequence",
+      );
+    }
+  }
+});

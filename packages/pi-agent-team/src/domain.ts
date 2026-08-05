@@ -41,6 +41,14 @@ export interface MessageEnvelope {
   audience: readonly MemberId[];
   body: string;
   wake: WakePolicy;
+  /**
+   * Members this public speech explicitly addresses. Mentioned members are
+   * woken to reply even though the envelope's channel-level wake policy is
+   * passive — one public message both shares its content with everyone and
+   * hands the floor to its named next speakers, which is how a conversation
+   * flows without a follow-up direct message restating it.
+   */
+  mentions: readonly MemberId[];
   purpose: "speech" | "message" | "handoff" | "system";
   sentAt: number;
 }
@@ -74,7 +82,7 @@ export interface TeamTurn {
 }
 
 export type TeamCommand =
-  | { type: "say"; body: string }
+  | { type: "say"; body: string; to?: readonly string[] }
   | { type: "broadcast"; body: string }
   | { type: "send"; to: MemberId; body: string }
   | { type: "create-group"; channelId: ChannelId; name: string; members: readonly MemberId[] }
@@ -172,6 +180,8 @@ export interface TeamActivity {
   visibility: "public" | "restricted";
   channel: ChannelTarget;
   targetIds: readonly MemberId[];
+  /** For public speech: the members this message mentions (and wakes). */
+  mentions?: readonly MemberId[];
   body?: string;
 }
 

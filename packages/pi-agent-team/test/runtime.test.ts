@@ -355,3 +355,96 @@ test("claims are atomic and audit chain detects tampering", async () => {
   tampered[1].data = { changed: true };
   assert.equal(verifyAudit(tampered), false);
 });
+
+test("a public say mentioning a teammate wakes exactly them; the rest receive it passively", async () => {
+  // a is started alone, speaks publicly mentioning b (and itself — a
+  // self-mention is a harmless no-op, dropped rather than bouncing the
+  // whole message). b must wake immediately from the mention, observing
+  // the public envelope itself; c is never interrupted and only sees the
+  // speech on the pre-quiescence flush, strictly after b's turn.
+  const actOrder: string[] = [];
+  const seen = new Map<string, TeamTurn[]>();
+  class MentionAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      actOrder.push(this.member.id);
+      seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (this.member.id === "a")
+        return [
+          { type: "say", body: "opening", to: ["a", "b"] },
+          { type: "finish", summary: "spoke" },
+        ];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  const agents = members.map((member) => new MentionAgent(member));
+  const result = await new TeamRuntime(
+    "chat",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  assert.deepEqual(actOrder, ["a", "b", "c"], "the mention wakes b before c's flush");
+  const bTurn = seen.get("b")![0];
+  const observedSay = bTurn.observations.find((message) => message.body === "opening");
+  assert.ok(observedSay, "b observes the public speech itself, not a restatement");
+  assert.equal(observedSay.channel.kind, "public");
+  assert.deepEqual(observedSay.mentions, ["b"], "the self-mention is dropped, b's kept");
+  assert.ok(
+    !seen
+      .get("a")!
+      .flatMap((turn) => turn.observations)
+      .some((message) => message.from === "runtime"),
+    "a self-mention never bounces the say",
+  );
+  const cTurn = seen.get("c")![0];
+  assert.ok(
+    cTurn.observations.some((message) => message.body === "opening"),
+    "c still receives the public speech passively before quiescence",
+  );
+});
+
+test("a public say mentioning a terminal teammate bounces instead of silently never waking them", async () => {
+  const seen = new Map<string, TeamTurn[]>();
+  class BounceAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (this.member.id === "b") return [{ type: "finish", summary: "gone" }];
+      if (this.member.id === "a" && turn.turn === 1)
+        return [
+          { type: "say", body: "opening", to: ["b"] },
+          { type: "finish", summary: "spoke" },
+        ];
+      if (turn.turn === 1) return [{ type: "say", body: "late ping", to: ["b"] }, { type: "wait" }];
+      return [{ type: "finish", summary: "saw the bounce" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  const agents = members.map((member) => new BounceAgent(member));
+  const result = await new TeamRuntime(
+    "chat",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  const bounce = seen
+    .get("c")!
+    .flatMap((turn) => turn.observations)
+    .find((message) => message.from === "runtime");
+  assert.match(bounce?.body ?? "", /COMMAND_FAILED type=say/);
+  assert.match(bounce?.body ?? "", /finished/);
+  assert.ok(
+    !result.publicTranscript.some((message) => message.body === "late ping"),
+    "a bounced say is rejected before it is posted, not published without its wake",
+  );
+});
