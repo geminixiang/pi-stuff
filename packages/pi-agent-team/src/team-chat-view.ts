@@ -1,6 +1,6 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Markdown, type Component } from "@earendil-works/pi-tui";
-import type { ChannelTarget, TeamActivity, TeamMemberState, TeamProgress, TeamResult } from "./domain.js";
+import { Markdown, type Component, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { TeamActivity, TeamMemberState, TeamProgress, TeamResult } from "./domain.js";
 import { accentWrap } from "./member-colors.js";
 
 export interface TeamDisplayDetails {
@@ -187,7 +187,13 @@ export class TeamChatView implements Component {
           `Runtime status: ${details.result.settlement.kind} (${details.result.settlement.meaning}; objective correctness is not verified)`,
         ),
       );
-    return lines;
+    // This view combines dynamic names, ids, channel audiences, and runtime
+    // text. Any of them can be wider than the terminal (notably a public
+    // message mentioning a large team), so enforce the Component width
+    // contract at the outermost boundary rather than relying on every row
+    // producer to anticipate all combinations.
+    const safeWidth = Math.max(1, width);
+    return lines.flatMap((line) => wrapTextWithAnsi(line, safeWidth));
   }
 }
 
