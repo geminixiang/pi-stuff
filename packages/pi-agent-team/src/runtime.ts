@@ -152,12 +152,13 @@ export class TeamRuntime {
       objective: this.objective,
       memberCount: this.agents.size,
     });
-    for (const post of Array.isArray(initial) ? initial : [initial])
+    const initialPosts = Array.isArray(initial) ? initial : [initial];
+    for (const post of initialPosts)
       this.post("user", post.channel, post.body, "interrupt", "message");
-    // A single initial post (not an array of distinct per-member envelopes)
-    // is exactly the case same-source sequencing applies to; only then does
-    // the first-turn barrier below have anything to protect against.
-    if (!Array.isArray(initial)) this.openingWaveMembers = new Set(this.ready);
+    // Exactly one initial envelope is the case same-source sequencing applies
+    // to, regardless of whether the caller used the scalar or array spelling;
+    // only then does the first-turn barrier below have anything to protect.
+    if (initialPosts.length === 1) this.openingWaveMembers = new Set(this.ready);
 
     const maxTurns = this.options.maxTurns ?? Math.max(256, this.agents.size * 32);
     const waveConcurrency = Math.max(1, this.options.waveConcurrency ?? 8);
@@ -316,6 +317,23 @@ export class TeamRuntime {
   }
 
   /**
+   * An explicit interrupt opts its recipient out of the opening-independence
+   * barrier: a prompt that refers to earlier public speech is unusable if
+   * that speech remains hidden until a later turn. Move any held context
+   * into the ordinary mailbox before the interrupt itself is enqueued and
+   * preserve the immutable envelope order across both queues.
+   */
+  private liftOpeningBarrierForInterrupt(memberId: MemberId): void {
+    const held = this.heldBackForReveal.get(memberId);
+    if (!held?.length) return;
+    const queue = this.observations.get(memberId)!;
+    queue.push(...held);
+    queue.sort((left, right) => left.sequence - right.sequence);
+    this.heldBackForReveal.delete(memberId);
+    this.openingWaveDrafted.add(memberId);
+  }
+
+  /**
    * Delivers everything held back during the opening wave and wakes every
    * recipient that has any — a same-source reveal of the round's exchanged
    * first takes, all at once, rather than a silent trickle-in whenever some
@@ -326,7 +344,9 @@ export class TeamRuntime {
   private revealOpeningWaveDrafts(): void {
     for (const [memberId, envelopes] of this.heldBackForReveal) {
       if (!envelopes.length || !this.runnable(memberId)) continue;
-      this.observations.get(memberId)!.push(...envelopes);
+      const queue = this.observations.get(memberId)!;
+      queue.push(...envelopes);
+      queue.sort((left, right) => left.sequence - right.sequence);
       this.ready.add(memberId);
       this.states.set(memberId, "ready");
       this.readyCause.set(memberId, OPENING_WAVE_REVEAL_CAUSE);
@@ -870,6 +890,12 @@ export class TeamRuntime {
       // handoff, and broadcast messages are never held back — those are
       // the sender explicitly choosing to reach this recipient right now,
       // not a passive conclusion that could anchor an undrafted first take.
+      if (wake === "interrupt") {
+        // A directed/group/broadcast interrupt can depend on passive public
+        // context sent immediately before it. Reveal that context first so
+        // the recipient never observes a later prompt before its premise.
+        this.liftOpeningBarrierForInterrupt(recipient);
+      }
       const holdBackForReveal =
         wake === "passive" &&
         channel.kind === "public" &&
@@ -878,6 +904,10 @@ export class TeamRuntime {
       (holdBackForReveal ? this.heldBackQueue(recipient) : this.observations.get(recipient)!).push(
         envelope,
       );
+      // Lifting can merge two queues; sorting after the new interrupt also
+      // makes the global ordering guarantee explicit at the delivery seam.
+      if (wake === "interrupt")
+        this.observations.get(recipient)!.sort((left, right) => left.sequence - right.sequence);
       this.record("message.enqueued", recipient, envelope.id, {
         channelId: channel.id,
         bodyHash: sha256(body),

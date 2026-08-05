@@ -101,7 +101,7 @@ test("the opening broadcast wave gives every member an independent first take be
     { id: "c", name: "C" },
   ];
   const firstTurnObservations = new Map<string, string[]>();
-  const secondTurnObservations = new Map<string, string[]>();
+  const secondTurnObservations = new Map<string, TeamTurn>();
   class Drafter {
     readonly sessionId = crypto.randomUUID();
     constructor(readonly member: TeamMember) {}
@@ -113,10 +113,7 @@ test("the opening broadcast wave gives every member an independent first take be
         );
         return [{ type: "say", body: `${this.member.id}'s first take` }];
       }
-      secondTurnObservations.set(
-        this.member.id,
-        turn.observations.map((message) => message.body),
-      );
+      secondTurnObservations.set(this.member.id, structuredClone(turn));
       return [{ type: "finish", summary: "done" }];
     }
   }
@@ -134,10 +131,114 @@ test("the opening broadcast wave gives every member an independent first take be
       `${member.id}'s first turn should see only the initial objective, never a peer's opening speech`,
     );
   }
-  const revealedAPeerDraft = [...secondTurnObservations.values()].some((bodies) =>
-    bodies.some((body) => /'s first take$/.test(body)),
-  );
-  assert.ok(revealedAPeerDraft, "peers' opening drafts are revealed together on the next turn");
+  for (const member of members) {
+    const expectedPeerDrafts = members
+      .filter((peer) => peer.id !== member.id)
+      .map((peer) => `${peer.id}'s first take`);
+    const secondTurn = secondTurnObservations.get(member.id);
+    assert.ok(secondTurn, `${member.id} should be woken for the opening reveal`);
+    const bodies = secondTurn.observations.map((message) => message.body);
+    assert.deepEqual(
+      [...bodies].sort(),
+      [...expectedPeerDrafts].sort(),
+      `${member.id} should receive every peer's opening draft exactly once`,
+    );
+    assert.deepEqual(
+      secondTurn.observations.map((message) => message.sequence),
+      [...secondTurn.observations]
+        .sort((left, right) => left.sequence - right.sequence)
+        .map((message) => message.sequence),
+      `${member.id}'s revealed drafts should preserve envelope order`,
+    );
+  }
+});
+
+test("a one-element initial-post array gets the same opening barrier as scalar syntax", async () => {
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const firstTurns = new Map<string, string[]>();
+  class Drafter {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) {
+        firstTurns.set(
+          this.member.id,
+          turn.observations.map((message) => message.body),
+        );
+        return [{ type: "say", body: `${this.member.id}'s first take` }];
+      }
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = members.map((member) => new Drafter(member));
+  await new TeamRuntime(
+    "array opening draft",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run([{ channel: { kind: "public" }, body: "objective" }]);
+
+  for (const member of members)
+    assert.deepEqual(
+      firstTurns.get(member.id),
+      ["objective"],
+      `${member.id}'s array-form start should remain independent`,
+    );
+});
+
+test("an interrupt reveals earlier held-back public context to its recipient in sequence order", async () => {
+  // A common conversational turn is say(context), then DM(peer, "reply").
+  // The opening-independence barrier must not deliver the explicit prompt
+  // before the public context it refers to. An interrupt deliberately lifts
+  // the barrier for its recipient; opening members who are not interrupted
+  // remain protected by the ordinary barrier test above.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const observed = new Map<string, TeamTurn[]>();
+  class ConversationalAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      observed.set(this.member.id, [...(observed.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (turn.turn === 1) {
+        const peer = this.member.id === "a" ? "b" : "a";
+        return [
+          { type: "say", body: `context:${this.member.id}` },
+          { type: "send", to: peer, body: `ping:${this.member.id}` },
+          { type: "wait" },
+        ];
+      }
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = members.map((member) => new ConversationalAgent(member));
+  await new TeamRuntime(
+    "ordered conversation",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "objective" });
+
+  for (const turns of observed.values()) {
+    for (const turn of turns) {
+      const peerPing = turn.observations.find((message) => message.body.startsWith("ping:"));
+      if (!peerPing) continue;
+      const sender = peerPing.body.slice("ping:".length);
+      const bodies = turn.observations.map((message) => message.body);
+      assert.ok(
+        bodies.includes(`context:${sender}`),
+        "an interrupt must reveal the earlier public context in the same observation batch",
+      );
+      assert.deepEqual(
+        turn.observations.map((message) => message.sequence),
+        [...turn.observations]
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((message) => message.sequence),
+        "mixed held-back and ordinary observations must preserve envelope sequence",
+      );
+    }
+  }
 });
 
 test("a directed single-member start is unaffected by the opening-wave barrier", async () => {
@@ -193,3 +294,4 @@ test("a wave woken by distinct envelopes (different direct messages) is unaffect
   ]);
   assert.equal(result.settlement.kind, "completed");
 });
+
