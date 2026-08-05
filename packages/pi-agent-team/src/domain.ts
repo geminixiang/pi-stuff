@@ -150,6 +150,7 @@ export interface AuditEvent {
     | "member.finished"
     | "member.errored"
     | "command.failed"
+    | "observer.failed"
     | "team.completed"
     | "team.quiescent"
     | "team.exhausted";

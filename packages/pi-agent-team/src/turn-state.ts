@@ -46,6 +46,17 @@ export class TurnState {
     return this.commands;
   }
 
+  /**
+   * True once a turn-ending command was accepted this turn — the one case
+   * where the caller deliberately aborts its own session prompt. Queued
+   * commands alone cannot distinguish that self-abort from a real provider
+   * failure: a session can die after a say was queued but before any
+   * turn-ending command, and that failure must surface, not be swallowed.
+   */
+  get endedTurn(): boolean {
+    return this.turnEnded;
+  }
+
   apply(command: TeamCommand, confirmation: string): TurnApplyResult {
     if (this.claimPending) return { text: CLAIM_FENCE_TEXT, endsTurn: false };
     if (this.turnEnded) return { text: TURN_ENDED_TEXT, endsTurn: false };

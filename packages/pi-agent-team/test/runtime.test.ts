@@ -448,3 +448,110 @@ test("a public say mentioning a terminal teammate bounces instead of silently ne
     "a bounced say is rejected before it is posted, not published without its wake",
   );
 });
+
+test("a rejected command halts the batch so a same-batch finish cannot seal the member terminal", async () => {
+  // Regression for the terminal trap invariant 26 closes: under the old
+  // ordered best-effort batches, a send to a bad recipient bounced but the
+  // finish queued behind it still applied, leaving the member finished
+  // before it could ever observe the bounce — and no wake can reach a
+  // terminal member to let it correct course.
+  const secondTurnObservations: string[] = [];
+  class Hasty {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1)
+        return [
+          { type: "send", to: "nobody-by-this-name", body: "hello?" },
+          { type: "finish", summary: "premature" },
+        ];
+      secondTurnObservations.push(...turn.observations.map((message) => message.body));
+      return [{ type: "finish", summary: "recovered" }];
+    }
+  }
+  class Bystander {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const hasty = new Hasty();
+  const bystander = new Bystander();
+  const result = await new TeamRuntime(
+    "halt",
+    new Map([
+      [hasty.member.id, hasty],
+      [bystander.member.id, bystander],
+    ]),
+  ).run({ channel: { kind: "public" }, body: "start" });
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.ok(
+    result.events.some(
+      (event) =>
+        event.type === "command.failed" &&
+        event.memberId === "a" &&
+        event.data.commandType === "send",
+    ),
+  );
+  assert.ok(
+    secondTurnObservations.some((body) => body.startsWith("COMMAND_FAILED")),
+    "the member is woken with the structured error instead of being sealed terminal",
+  );
+  assert.ok(
+    secondTurnObservations.some((body) => body.startsWith("COMMAND_BATCH_HALTED")),
+    "the member is told its post-rejection commands (including the finish) were discarded",
+  );
+  const finishes = result.events.filter(
+    (event) => event.type === "member.finished" && event.memberId === "a",
+  );
+  assert.equal(finishes.length, 1, "the discarded premature finish never applied");
+});
+
+test("a throwing presentation observer is disabled and diagnosed, never allowed to change domain outcomes", async () => {
+  // Regression: onActivity used to be invoked bare inside executeCommand, so
+  // an observer throw was indistinguishable from the command itself failing
+  // (bouncing valid commands, even erroring the member); a bare onProgress
+  // throw rejected the whole run. Presentation observers are guests — their
+  // failure is diagnosed and the observer disabled, nothing more.
+  class Finisher {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = [new Finisher({ id: "a", name: "A" }), new Finisher({ id: "b", name: "B" })];
+  const result = await new TeamRuntime(
+    "guests",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+    {
+      onActivity: () => {
+        throw new Error("activity observer exploded");
+      },
+      onProgress: () => {
+        throw new Error("progress observer exploded");
+      },
+    },
+  ).run({ channel: { kind: "public" }, body: "start" });
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(
+    result.events.some((event) => event.type === "command.failed"),
+    false,
+    "an observer throw must not masquerade as a command failure",
+  );
+  assert.equal(
+    result.events.some((event) => event.type === "member.errored"),
+    false,
+    "an observer throw must not error the member it was watching",
+  );
+  const observerFailures = result.events.filter((event) => event.type === "observer.failed");
+  assert.deepEqual(
+    observerFailures.map((event) => event.data.observer).sort(),
+    ["onActivity", "onProgress"],
+    "each observer's first throw is recorded once, then the observer is disabled",
+  );
+  assert.ok(verifyAudit(result.events), "diagnostic events chain into the audit like any other");
+});

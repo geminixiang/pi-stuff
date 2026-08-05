@@ -42,10 +42,13 @@ export class PiTeamAgent implements TeamAgent {
       await session.prompt(formatTurn(turn));
     } catch (cause) {
       if (signal.aborted) throw signal.reason;
-      // A terminal team action (wait/finish/claim) self-aborts the prompt to
-      // stop further tool-call rounds; the queued command still stands. Only
-      // rethrow if nothing was queued, which means a real failure occurred.
-      if (!this.turnState.queued.length) throw cause;
+      // A turn-ending team action (wait/finish/claim) self-aborts the prompt
+      // to stop further tool-call rounds; the queued commands still stand.
+      // That self-abort is the only failure this turn expects, and TurnState
+      // records it as endedTurn. Any other failure — a provider dying after
+      // a say was queued, say — must surface as this member's error rather
+      // than silently committing the half batch it left behind.
+      if (!this.turnState.endedTurn) throw cause;
     } finally {
       signal.removeEventListener("abort", onAbort);
     }

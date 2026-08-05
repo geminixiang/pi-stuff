@@ -44,6 +44,7 @@ type InitialPost =
 export class TeamRuntime {
   readonly teamId = randomUUID();
   private readonly observations = new Map<MemberId, MessageEnvelope[]>();
+  private readonly disabledObservers = new Set<"onProgress" | "onActivity">();
   private readonly envelopes: MessageEnvelope[] = [];
   private readonly groups = new Map<ChannelId, Extract<Channel, { kind: "group" }>>();
   private readonly events: AuditEvent[] = [];
@@ -213,7 +214,7 @@ export class TeamRuntime {
         this.revealOpeningWaveDrafts();
         this.openingWaveMembers = null;
       }
-      this.options.onProgress?.(this.progress());
+      this.safeObserve("onProgress", () => this.options.onProgress?.(this.progress()));
     }
     if (signal?.aborted) throw signal.reason;
 
@@ -475,7 +476,27 @@ export class TeamRuntime {
         );
         const effective = terminalIndex === -1 ? commands : commands.slice(0, terminalIndex + 1);
         const budget = Math.max(1, this.options.maxCommandsPerTurn ?? 16);
-        for (const command of effective.slice(0, budget)) this.applyCommand(memberId, command);
+        // Invariant 26 (fail-stop batches): committed commands are never
+        // rolled back, but the first rejection halts the batch — anything
+        // after it is discarded, not applied. A batch's later commands were
+        // planned assuming its earlier ones landed; the trap this closes is
+        // a rejected send followed in the same batch by finish, which sealed
+        // the member terminal before it could ever see the bounce. The
+        // COMMAND_FAILED interrupt wakes the member to replan next turn.
+        const applicable = effective.slice(0, budget);
+        for (let index = 0; index < applicable.length; index++) {
+          if (this.applyCommand(memberId, applicable[index])) continue;
+          const discarded = applicable.length - index - 1;
+          if (discarded > 0)
+            this.post(
+              "runtime",
+              { kind: "direct", memberId },
+              `COMMAND_BATCH_HALTED rejected=${applicable[index].type} discarded=${discarded}; commands after a rejection are not applied — replan and resend what still matters next turn`,
+              "interrupt",
+              "system",
+            );
+          break;
+        }
         if (effective.length > budget)
           this.post(
             "runtime",
@@ -524,9 +545,11 @@ export class TeamRuntime {
     );
   }
 
-  private applyCommand(from: MemberId, command: TeamCommand): void {
+  /** Returns whether the command was accepted; a rejection bounces to the sender. */
+  private applyCommand(from: MemberId, command: TeamCommand): boolean {
     try {
       this.executeCommand(from, command);
+      return true;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       this.record("command.failed", from, undefined, { commandType: command.type, error: message });
@@ -537,6 +560,7 @@ export class TeamRuntime {
         "interrupt",
         "system",
       );
+      return false;
     }
   }
 
@@ -781,7 +805,13 @@ export class TeamRuntime {
     const existing = this.closedPolls.get(pollId);
     if (existing)
       throw new Error(`poll already closed: ${pollId} — ${describePollOutcome(existing.outcome)}`);
-    const votes = this.polls.get(pollId) ?? new Map<MemberId, string>();
+    // A poll exists only once a vote has been cast into it. Fabricating an
+    // empty tally here (`?? new Map()`) would let any member permanently
+    // close a guessable pollId as no-votes without ever holding the claim
+    // castVote requires for a new id — bypassing that namespace reservation
+    // entirely. A nonexistent poll bounces like any other bad reference.
+    const votes = this.polls.get(pollId);
+    if (!votes) throw new Error(`no such poll: ${pollId} — no votes have been cast under that id`);
     const result = this.tallyPoll(pollId, votes);
     this.closedPolls.set(pollId, result);
     this.polls.delete(pollId);
@@ -1017,6 +1047,27 @@ export class TeamRuntime {
     this.auditHead = hash;
   }
 
+  /**
+   * Presentation observers are untrusted guests: a throwing onActivity or
+   * onProgress must never fail the command, error the member, or reject the
+   * run it was merely watching — those are domain outcomes, and observers
+   * have no vote in them. The first throw disables that observer for the
+   * rest of the run and records a diagnostic audit event. A sink that needs
+   * fail-fast durability doesn't belong in these optional callbacks.
+   */
+  private safeObserve(observer: "onProgress" | "onActivity", invoke: () => void): void {
+    if (this.disabledObservers.has(observer)) return;
+    try {
+      invoke();
+    } catch (cause) {
+      this.disabledObservers.add(observer);
+      this.record("observer.failed", undefined, undefined, {
+        observer,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+
   private emitActivity(
     memberId: PrincipalId,
     kind: TeamActivity["kind"],
@@ -1026,18 +1077,20 @@ export class TeamRuntime {
     body?: string,
     mentions?: readonly MemberId[],
   ): void {
-    this.options.onActivity?.(
-      Object.freeze({
-        sequence: ++this.activitySequence,
-        memberId,
-        kind,
-        text,
-        visibility: channel.kind !== "public" ? "restricted" : "public",
-        channel,
-        targetIds: Object.freeze([...targetIds]),
-        mentions: mentions?.length ? Object.freeze([...mentions]) : undefined,
-        body,
-      }),
+    this.safeObserve("onActivity", () =>
+      this.options.onActivity?.(
+        Object.freeze({
+          sequence: ++this.activitySequence,
+          memberId,
+          kind,
+          text,
+          visibility: channel.kind !== "public" ? "restricted" : "public",
+          channel,
+          targetIds: Object.freeze([...targetIds]),
+          mentions: mentions?.length ? Object.freeze([...mentions]) : undefined,
+          body,
+        }),
+      ),
     );
   }
 
