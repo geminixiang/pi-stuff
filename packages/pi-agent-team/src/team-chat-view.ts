@@ -162,10 +162,12 @@ export class TeamChatView implements Component {
       lines.push(
         "",
         theme.fg(
-          details.result.settlement.kind === "completed" ||
-            details.result.settlement.meaning === "errored-members-remain"
-            ? "success"
-            : "warning",
+          // Only a genuine `completed` settlement reads as success. Prior
+          // code also colored `errored-members-remain` green because it's a
+          // *stable* terminal state (unlike `no-runnable-members`) — but
+          // stable isn't the same as successful: real members errored out,
+          // and green next to that reads as "the run went fine."
+          details.result.settlement.kind === "completed" ? "success" : "warning",
           `Runtime status: ${details.result.settlement.kind} (${details.result.settlement.meaning}; objective correctness is not verified)`,
         ),
       );

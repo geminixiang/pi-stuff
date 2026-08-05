@@ -8,6 +8,19 @@ export interface TeamMember {
   name: string;
 }
 
+/**
+ * A MemberId must never be empty/whitespace-only, nor collide with the
+ * other two PrincipalId variants ("user", "runtime") — every place that
+ * distinguishes a real member from the runtime/user sentinel principals
+ * (resolveMemberId, digest state, bounce and audit messages addressed "to
+ * runtime") relies on that separation holding.
+ */
+export function assertValidMemberId(id: MemberId): void {
+  if (!id.trim()) throw new Error("Member id must not be empty or whitespace-only");
+  if (id === "user" || id === "runtime")
+    throw new Error(`Member id "${id}" collides with a reserved principal id; choose a different id`);
+}
+
 export type Channel =
   | { kind: "public"; id: "public" }
   | { kind: "direct"; id: ChannelId; members: readonly [PrincipalId, MemberId] }
@@ -88,8 +101,10 @@ export type PollOutcome =
 /**
  * The runtime-computed, code-tallied result of a closed poll. `votes` is
  * the full per-member breakdown — polls are open ballots, not secret, same
- * transparency stance as claim resource names. `eligible` excludes only
- * errored members at close time (quorum awareness, not vote validity);
+ * transparency stance as claim resource names. `eligible` excludes any
+ * terminal (errored *or* finished) member who never cast, at close time
+ * (quorum awareness, not vote validity) — a member who finishes without
+ * ever casting drops the electorate the same way an errored one does;
  * `missing` is the eligible members who never cast before close, so a
  * closer can tell an honest tie from a premature close.
  */

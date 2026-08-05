@@ -1,11 +1,33 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { TeamActivity, TeamProgress } from "./domain.js";
+import { assertValidMemberId, type TeamActivity, type TeamProgress } from "./domain.js";
 import { PiTeamAgent } from "./pi-agent.js";
 import { TeamRuntime } from "./runtime.js";
 import { TeamChatView, type TeamDisplayDetails } from "./team-chat-view.js";
 import { TeamRosterWidget } from "./team-roster-widget.js";
+
+/**
+ * Runs before `params.members` collapses into a `Map<MemberId, TeamAgent>`
+ * (`new Map(members.map((m) => [m.id, ...]))`): a Map is inherently
+ * deduplicated by key, so a duplicate id in the raw array would otherwise
+ * silently fold into one entry — the caller's intended member count quietly
+ * shrinks with no error anywhere. "all" is reserved separately from
+ * assertValidMemberId's "user"/"runtime" check because it's meaningful only
+ * to this extension's startMemberId convention, not to TeamRuntime itself.
+ */
+export function assertUniqueMemberRoster(members: readonly { id: string; name: string }[]): void {
+  for (const member of members) {
+    assertValidMemberId(member.id);
+    if (member.id === "all")
+      throw new Error(
+        `Member id "all" is reserved for startMemberId's "send to everyone" sentinel; choose a different id`,
+      );
+  }
+  const ids = members.map((member) => member.id);
+  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (duplicate) throw new Error(`Duplicate member id "${duplicate}": member ids must be unique`);
+}
 
 export default function agentTeam(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -39,6 +61,7 @@ export default function agentTeam(pi: ExtensionAPI): void {
       { additionalProperties: false },
     ),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      assertUniqueMemberRoster(params.members);
       const activities: TeamActivity[] = [];
       let progress: TeamProgress | undefined;
       const details = (): TeamDisplayDetails => ({

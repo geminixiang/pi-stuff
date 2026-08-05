@@ -189,6 +189,41 @@ test("a message loop settles as exhausted with a partial result instead of throw
   assert.ok(result.events.some((event) => event.type === "team.exhausted"));
 });
 
+test("maxTurns is a hard cap even when one wave has more ready members than the remaining budget", async () => {
+  // Previously the maxTurns check ran only *before* building a wave — a
+  // wave larger than the remaining budget still ran to completion (whether
+  // sequential same-source or one concurrent waveConcurrency chunk), so
+  // totalTurns could overshoot maxTurns before the next check ever saw it.
+  // Two distinct direct envelopes make a and b ready via different causes
+  // (not same-source), so both would land in one concurrent chunk together.
+  class Waiter {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "wait" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const agents = members.map((member) => new Waiter(member));
+  const result = await new TeamRuntime(
+    "hard-cap",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+    { maxTurns: 1 },
+  ).run([
+    { channel: { kind: "direct", memberId: "a" }, body: "go" },
+    { channel: { kind: "direct", memberId: "b" }, body: "go" },
+  ]);
+  assert.equal(result.settlement.kind, "exhausted");
+  assert.equal(
+    result.members.reduce((sum, member) => sum + member.turns, 0),
+    1,
+    "only one of the two ready members should run under a maxTurns:1 budget",
+  );
+});
+
 test("a released claim can be acquired by another member and finish auto-releases", async () => {
   class Owner {
     readonly sessionId = crypto.randomUUID();

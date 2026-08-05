@@ -245,6 +245,103 @@ test("finish summary is control state and never public speech", async () => {
   );
 });
 
+test("a wait command truncates the rest of the batch at the core level, for any TeamAgent", async () => {
+  // TeamAgent is a public interface; invariant 16 (turn-ending protocol)
+  // must hold for any implementation, not only PiTeamAgent's TurnState-
+  // gated one. A raw agent that returns [wait, send] should have the send
+  // dropped by the core itself, not just by the Pi adapter.
+  let otherSawForbiddenMessage = false;
+  class Rogue {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "rogue", name: "Rogue" };
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "wait" }, { type: "send", to: "other", body: "should never arrive" }];
+    }
+  }
+  class Other {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "other", name: "Other" };
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body === "should never arrive"))
+        otherSawForbiddenMessage = true;
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const rogue = new Rogue();
+  const other = new Other();
+  const result = await new TeamRuntime(
+    "truncate-wait",
+    new Map([
+      [rogue.member.id, rogue],
+      [other.member.id, other],
+    ]),
+  ).run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(
+    otherSawForbiddenMessage,
+    false,
+    "the send after wait should have been discarded by the core",
+  );
+  assert.deepEqual(
+    result.settlement,
+    { kind: "quiescent", meaning: "no-runnable-members" },
+    "rogue waits forever after its truncated turn — nothing ever wakes it again",
+  );
+});
+
+test("a finish command truncates the rest of the batch at the core level, for any TeamAgent", async () => {
+  class Rogue {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "rogue", name: "Rogue" };
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }, { type: "say", body: "should never post" }];
+    }
+  }
+  class Other {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "other", name: "Other" };
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const rogue = new Rogue();
+  const other = new Other();
+  const result = await new TeamRuntime(
+    "truncate-finish",
+    new Map([
+      [rogue.member.id, rogue],
+      [other.member.id, other],
+    ]),
+  ).run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(
+    result.publicTranscript.some((message) => message.body === "should never post"),
+    false,
+    "the say after finish should have been discarded by the core",
+  );
+});
+
+test("run() may only be called once per TeamRuntime instance", async () => {
+  class Finisher {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const agents = members.map((member) => new Finisher(member));
+  const runtime = new TeamRuntime("once", new Map(agents.map((agent) => [agent.member.id, agent])));
+  const first = await runtime.run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(first.settlement.kind, "completed");
+  await assert.rejects(
+    () => runtime.run({ channel: { kind: "public" }, body: "start again" }),
+    /may only be called once/,
+  );
+});
+
 test("claims are atomic and audit chain detects tampering", async () => {
   const agents = [new ClaimAgent({ id: "a", name: "A" }), new ClaimAgent({ id: "b", name: "B" })];
   const result = await new TeamRuntime(

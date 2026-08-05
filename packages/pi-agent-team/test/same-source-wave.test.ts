@@ -87,6 +87,90 @@ test("team_broadcast is the sole member-originated public interrupt: it wakes ev
   assert.equal(result.members.find((member) => member.id === "c")?.turns, 1);
 });
 
+test("the opening broadcast wave gives every member an independent first take before revealing peers' drafts together", async () => {
+  // Reproduces an anchoring bug: same-source sequencing (needed for
+  // claim/group/poll convergence) also meant an earlier member's passive
+  // team_say landed in a later member's mailbox before that later member
+  // had taken even its own first turn — its first take was never
+  // independent, it was already informed by a peer's conclusion. The fix
+  // holds public passive speech posted during the opening wave back from
+  // any not-yet-drafted member, then reveals it all at once right after.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  const firstTurnObservations = new Map<string, string[]>();
+  const secondTurnObservations = new Map<string, string[]>();
+  class Drafter {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) {
+        firstTurnObservations.set(
+          this.member.id,
+          turn.observations.map((message) => message.body),
+        );
+        return [{ type: "say", body: `${this.member.id}'s first take` }];
+      }
+      secondTurnObservations.set(
+        this.member.id,
+        turn.observations.map((message) => message.body),
+      );
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = members.map((member) => new Drafter(member));
+  const result = await new TeamRuntime(
+    "opening-draft",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "objective" });
+
+  assert.equal(result.settlement.kind, "completed");
+  for (const member of members) {
+    assert.deepEqual(
+      firstTurnObservations.get(member.id) ?? [],
+      ["objective"],
+      `${member.id}'s first turn should see only the initial objective, never a peer's opening speech`,
+    );
+  }
+  const revealedAPeerDraft = [...secondTurnObservations.values()].some((bodies) =>
+    bodies.some((body) => /'s first take$/.test(body)),
+  );
+  assert.ok(revealedAPeerDraft, "peers' opening drafts are revealed together on the next turn");
+});
+
+test("a directed single-member start is unaffected by the opening-wave barrier", async () => {
+  // With only one member interrupted by the initial post, there is no
+  // sameSource wave and nobody else's speech could ever be held back for
+  // it — the barrier bookkeeping should simply be a no-op here.
+  class Starter {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "a", name: "A" };
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "send", to: "b", body: "go" }, { type: "wait" }];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class Other {
+    readonly sessionId = crypto.randomUUID();
+    readonly member = { id: "b", name: "B" };
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      return [{ type: "send", to: "a", body: "ack" }, { type: "finish", summary: "done" }];
+    }
+  }
+  const starter = new Starter();
+  const other = new Other();
+  const result = await new TeamRuntime(
+    "directed-start",
+    new Map([
+      [starter.member.id, starter],
+      [other.member.id, other],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+});
+
 test("a wave woken by distinct envelopes (different direct messages) is unaffected — still completes normally", async () => {
   class Direct {
     readonly sessionId = crypto.randomUUID();

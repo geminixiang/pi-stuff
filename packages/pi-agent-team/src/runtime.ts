@@ -1,23 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import type {
-  AuditEvent,
-  Channel,
-  ChannelId,
-  ChannelTarget,
-  MemberId,
-  MessageEnvelope,
-  MessageId,
-  PollOutcome,
-  PollResult,
-  PrincipalId,
-  TeamActivity,
-  TeamAgent,
-  TeamCommand,
-  TeamDigest,
-  TeamMemberState,
-  TeamProgress,
-  TeamResult,
-  WakePolicy,
+import {
+  assertValidMemberId,
+  type AuditEvent,
+  type Channel,
+  type ChannelId,
+  type ChannelTarget,
+  type MemberId,
+  type MessageEnvelope,
+  type MessageId,
+  type PollOutcome,
+  type PollResult,
+  type PrincipalId,
+  type TeamActivity,
+  type TeamAgent,
+  type TeamCommand,
+  type TeamDigest,
+  type TeamMemberState,
+  type TeamProgress,
+  type TeamResult,
+  type WakePolicy,
 } from "./domain.js";
 
 export interface TeamRuntimeOptions {
@@ -68,9 +69,25 @@ export class TeamRuntime {
   private readonly closedPolls = new Map<string, PollResult>();
   private readonly fullyCastPolls = new Set<string>();
   private readonly states = new Map<MemberId, TeamMemberState>();
+  /**
+   * The members made ready together by a *single* initial post — the common
+   * "objective sent to everyone" case. Same-source sequencing (see
+   * `readyCause` above) makes that opening wave converge on shared
+   * coordination structures, but sequential wake-up also means an earlier
+   * member's passive public speech would otherwise land in a later member's
+   * mailbox before that later member has taken even its own first turn,
+   * anchoring their first take on a peer's conclusion instead of the raw
+   * objective. `openingWaveDrafted`/`heldBackForReveal` below implement a
+   * barrier for exactly this round: null once every member here has drafted
+   * (or become terminal) and the held-back speech has been revealed.
+   */
+  private openingWaveMembers: Set<MemberId> | null = null;
+  private readonly openingWaveDrafted = new Set<MemberId>();
+  private readonly heldBackForReveal = new Map<MemberId, MessageEnvelope[]>();
   private activitySequence = 0;
   private auditHead = "0".repeat(64);
   private recent = "Team created";
+  private started = false;
 
   constructor(
     readonly objective: string,
@@ -80,6 +97,7 @@ export class TeamRuntime {
     if (agents.size < 2) throw new Error("A team requires at least two agents");
     for (const [id, agent] of agents) {
       if (id !== agent.member.id) throw new Error(`Agent map identity mismatch: ${id}`);
+      assertValidMemberId(id);
       this.observations.set(id, []);
       this.turns.set(id, 0);
       this.states.set(id, "idle");
@@ -89,10 +107,24 @@ export class TeamRuntime {
       throw new Error("Agent session IDs must be unique");
   }
 
+  /**
+   * A TeamRuntime instance runs exactly once. Its state (finished, errored,
+   * claims, polls, envelopes, events) accumulates across the single run and
+   * its agents are closed in the finally block below; calling run() again
+   * would resume scheduling over already-terminal members and already-
+   * disposed agent sessions, silently producing a second, semantically
+   * broken team.started/settlement pair in the same audit chain. Construct
+   * a new TeamRuntime for another run instead.
+   */
   async run(
     initial: InitialPost | readonly InitialPost[],
     signal?: AbortSignal,
   ): Promise<TeamResult> {
+    if (this.started)
+      throw new Error(
+        "TeamRuntime.run() may only be called once per instance; construct a new TeamRuntime for another run",
+      );
+    this.started = true;
     try {
       return await this.execute(initial, signal);
     } finally {
@@ -122,21 +154,38 @@ export class TeamRuntime {
     });
     for (const post of Array.isArray(initial) ? initial : [initial])
       this.post("user", post.channel, post.body, "interrupt", "message");
+    // A single initial post (not an array of distinct per-member envelopes)
+    // is exactly the case same-source sequencing applies to; only then does
+    // the first-turn barrier below have anything to protect against.
+    if (!Array.isArray(initial)) this.openingWaveMembers = new Set(this.ready);
 
     const maxTurns = this.options.maxTurns ?? Math.max(256, this.agents.size * 32);
     const waveConcurrency = Math.max(1, this.options.waveConcurrency ?? 8);
     let exhausted = false;
     while (!signal?.aborted) {
       if (!this.ready.size && !this.promoteStarvedMembers()) break;
-      if (this.totalTurns() >= maxTurns) {
+      const remaining = maxTurns - this.totalTurns();
+      if (remaining <= 0) {
         exhausted = true;
         break;
       }
       const rankSeed = `${this.teamId}:${this.totalTurns()}`;
-      const wave = [...this.ready].sort(
+      const fullWave = [...this.ready].sort(
         (left, right) => stableRank(rankSeed, left) - stableRank(rankSeed, right),
       );
+      // Cap the wave to the remaining budget so a wave of N ready members
+      // can never consume more than N turns beyond maxTurns — previously
+      // this was only checked *before* building a wave, so a wave larger
+      // than the remaining budget (whether run sequentially as same-source,
+      // or concurrently in one waveConcurrency chunk) still ran to
+      // completion, letting totalTurns overshoot maxTurns before the next
+      // check ever saw it. Anyone cut here stays in `ready` for the next
+      // iteration — or, if the budget is now spent, is correctly reported
+      // as still-ready in the exhausted settlement rather than silently run.
+      const wave = fullWave.slice(0, remaining);
+      const deferredByBudget = fullWave.slice(remaining);
       this.ready.clear();
+      for (const id of deferredByBudget) this.ready.add(id);
       const waveCause = this.readyCause.get(wave[0]);
       const sameSource =
         wave.length > 1 &&
@@ -149,6 +198,19 @@ export class TeamRuntime {
           await Promise.all(
             wave.slice(start, start + waveConcurrency).map((id) => this.wake(id, signal)),
           );
+      }
+      // Once every opening-wave member has independently drafted a first
+      // take (or become terminal without ever getting the chance), reveal
+      // whatever peer speech was held back from each of them — the barrier
+      // only needs to last for exactly this one round.
+      if (
+        this.openingWaveMembers &&
+        [...this.openingWaveMembers].every(
+          (id) => this.openingWaveDrafted.has(id) || !this.runnable(id),
+        )
+      ) {
+        this.revealOpeningWaveDrafts();
+        this.openingWaveMembers = null;
       }
       this.options.onProgress?.(this.progress());
     }
@@ -244,6 +306,34 @@ export class TeamRuntime {
     return !this.finished.has(memberId) && !this.errored.has(memberId);
   }
 
+  private heldBackQueue(memberId: MemberId): MessageEnvelope[] {
+    let queue = this.heldBackForReveal.get(memberId);
+    if (!queue) {
+      queue = [];
+      this.heldBackForReveal.set(memberId, queue);
+    }
+    return queue;
+  }
+
+  /**
+   * Delivers everything held back during the opening wave and wakes every
+   * recipient that has any — a same-source reveal of the round's exchanged
+   * first takes, all at once, rather than a silent trickle-in whenever some
+   * unrelated later event happens to wake each recipient. A member with
+   * nothing held back (typically whoever drafted first, before any peer had
+   * spoken) is left alone; it has nothing new to reveal.
+   */
+  private revealOpeningWaveDrafts(): void {
+    for (const [memberId, envelopes] of this.heldBackForReveal) {
+      if (!envelopes.length || !this.runnable(memberId)) continue;
+      this.observations.get(memberId)!.push(...envelopes);
+      this.ready.add(memberId);
+      this.states.set(memberId, "ready");
+      this.readyCause.set(memberId, OPENING_WAVE_REVEAL_CAUSE);
+    }
+    this.heldBackForReveal.clear();
+  }
+
   private async reactionDelay(signal?: AbortSignal): Promise<void> {
     const { min, max } = this.options.reactionDelayMs ?? { min: 0, max: 0 };
     const ms = min + Math.random() * Math.max(0, max - min);
@@ -262,6 +352,11 @@ export class TeamRuntime {
   }
 
   private async wake(memberId: MemberId, parentSignal?: AbortSignal): Promise<void> {
+    // Marks this member's opening-wave barrier as lifted the instant its own
+    // first wake begins — unconditionally, so a member is never left
+    // permanently undrafted (and so permanently hoarding held-back mail)
+    // even on a call that turns out to have nothing to observe below.
+    if (this.openingWaveMembers?.has(memberId)) this.openingWaveDrafted.add(memberId);
     if (!this.runnable(memberId)) return;
     const flush = this.flushing.delete(memberId);
     const observations = this.observations.get(memberId)!.splice(0);
@@ -322,6 +417,7 @@ export class TeamRuntime {
             peers: Object.freeze(
               [...this.agents.values()]
                 .map((value) => value.member)
+                .filter((member) => member.id !== memberId)
                 .sort(
                   (left, right) =>
                     stableRank(`${this.teamId}:${memberId}`, left.id) -
@@ -348,15 +444,34 @@ export class TeamRuntime {
             [memberId],
           );
       } else {
+        // Invariant 16 (turn-ending protocol): once wait/finish appears in
+        // the batch, nothing after it applies. PiTeamAgent's TurnState
+        // already enforces this on the way in, so a well-behaved adapter's
+        // array is already correctly truncated here — but TeamAgent is a
+        // public interface, and this is the one place the invariant holds
+        // for *any* implementation, not only PiTeamAgent's.
+        const terminalIndex = commands.findIndex(
+          (command) => command.type === "wait" || command.type === "finish",
+        );
+        const effective = terminalIndex === -1 ? commands : commands.slice(0, terminalIndex + 1);
         const budget = Math.max(1, this.options.maxCommandsPerTurn ?? 16);
-        for (const command of commands.slice(0, budget)) this.applyCommand(memberId, command);
-        if (commands.length > budget)
+        for (const command of effective.slice(0, budget)) this.applyCommand(memberId, command);
+        if (effective.length > budget)
           this.post(
             "runtime",
             { kind: "direct", memberId },
-            `COMMAND_BUDGET_EXCEEDED applied=${budget} dropped=${commands.length - budget}; resend what still matters next turn`,
+            `COMMAND_BUDGET_EXCEEDED applied=${budget} dropped=${effective.length - budget}; resend what still matters next turn`,
             "interrupt",
             "system",
+          );
+        const discardedAfterTurnEnd = commands.length - effective.length;
+        if (discardedAfterTurnEnd > 0)
+          this.emitActivity(
+            memberId,
+            "wait",
+            `turn already ended by wait/finish; discarded ${discardedAfterTurnEnd} action${discardedAfterTurnEnd === 1 ? "" : "s"} queued after it`,
+            { kind: "direct", memberId },
+            [memberId],
           );
       }
       if (this.runnable(memberId) && !this.ready.has(memberId))
@@ -379,6 +494,7 @@ export class TeamRuntime {
     this.record("member.errored", memberId, undefined, { error: message });
     this.emitActivity(memberId, "error", message, { kind: "direct", memberId }, [memberId]);
     this.releaseClaims(memberId, "member-errored");
+    this.recheckOpenPollsAfterTerminalTransition();
     this.post(
       "runtime",
       { kind: "public" },
@@ -415,6 +531,7 @@ export class TeamRuntime {
       this.record("member.finished", from, undefined, { summaryHash: sha256(command.summary) });
       this.emitActivity(from, "finish", command.summary, { kind: "direct", memberId: from }, [from]);
       this.releaseClaims(from, "member-finished");
+      this.recheckOpenPollsAfterTerminalTransition();
       return;
     }
     if (command.type === "claim") {
@@ -465,6 +582,7 @@ export class TeamRuntime {
       return;
     }
     const to = this.resolveMemberId(command.to);
+    if (to === from) throw new Error(`cannot ${command.type} to yourself`);
     this.assertDeliverable(to);
     this.post(
       from,
@@ -575,27 +693,49 @@ export class TeamRuntime {
     votes.set(from, choice);
     this.record("poll.cast", from, undefined, { pollId, choice });
     this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
-    // Casting a vote is otherwise silent — unlike a claim or a group, it
-    // posts nothing observable. Without this, every eligible voter can cast
-    // and then WAIT, and nothing ever wakes anyone to notice the poll is
-    // ready to close: a live run showed exactly this, four members voting
-    // and then the whole team going quiescent with no poll ever closed.
-    // This notice states only the objective fact that every eligible member
-    // has now cast — never that anyone should close it — so the runtime
-    // stays rule-agnostic about when a poll's tally is meant to be final.
-    if (!this.fullyCastPolls.has(pollId)) {
-      const result = this.tallyPoll(pollId, votes);
-      if (result.missing.length === 0) {
-        this.fullyCastPolls.add(pollId);
-        this.post(
-          "runtime",
-          { kind: "public" },
-          `POLL_FULLY_CAST pollId=${JSON.stringify(pollId)} voters=${JSON.stringify(result.eligible)}`,
-          "interrupt",
-          "system",
-        );
-      }
-    }
+    this.maybeAnnounceFullyCast(pollId, votes);
+  }
+
+  /**
+   * Casting a vote is otherwise silent — unlike a claim or a group, it posts
+   * nothing observable. Without this, every eligible voter can cast and then
+   * WAIT, and nothing ever wakes anyone to notice the poll is ready to
+   * close: a live run showed exactly this, four members voting and then the
+   * whole team going quiescent with no poll ever closed. This notice states
+   * only the objective fact that every eligible member has now cast — never
+   * that anyone should close it — so the runtime stays rule-agnostic about
+   * when a poll's tally is meant to be final.
+   *
+   * `eligible`/`missing` are computed from `runnable()`, which changes on
+   * every finish or error — not only on a cast. A poll can therefore become
+   * fully cast without anyone casting: the last outstanding voter simply
+   * finishes or errors instead. Every terminal transition re-runs this check
+   * for every still-open poll (see `executeCommand`'s finish branch and
+   * `markErrored`), not just `castVote`, or a voter who cast early could
+   * wait forever on a notice that never fires.
+   */
+  private maybeAnnounceFullyCast(pollId: string, votes: ReadonlyMap<MemberId, string>): void {
+    if (this.fullyCastPolls.has(pollId) || votes.size === 0) return;
+    const result = this.tallyPoll(pollId, votes);
+    if (result.missing.length !== 0) return;
+    this.fullyCastPolls.add(pollId);
+    this.post(
+      "runtime",
+      { kind: "public" },
+      `POLL_FULLY_CAST pollId=${JSON.stringify(pollId)} voters=${JSON.stringify(result.eligible)}`,
+      "interrupt",
+      "system",
+    );
+  }
+
+  /**
+   * Re-evaluates every currently open poll's fully-cast status after a
+   * terminal transition (finish or error), since `runnable()` — and
+   * therefore `eligible`/`missing` — just changed for every poll, not only
+   * the one (if any) the transitioning member was part of.
+   */
+  private recheckOpenPollsAfterTerminalTransition(): void {
+    for (const [pollId, votes] of this.polls) this.maybeAnnounceFullyCast(pollId, votes);
   }
 
   /**
@@ -723,7 +863,21 @@ export class TeamRuntime {
     this.emitActivity(from, "message", body, target, audience, body);
     for (const recipient of audience) {
       if (recipient === from || !this.runnable(recipient)) continue;
-      this.observations.get(recipient)!.push(envelope);
+      // First-turn barrier: public passive speech (team_say) posted while
+      // this recipient is still an undrafted opening-wave member is held
+      // back from its regular mailbox and revealed only once every opening-
+      // wave member has drafted (see revealOpeningWaveDrafts). Direct,
+      // handoff, and broadcast messages are never held back — those are
+      // the sender explicitly choosing to reach this recipient right now,
+      // not a passive conclusion that could anchor an undrafted first take.
+      const holdBackForReveal =
+        wake === "passive" &&
+        channel.kind === "public" &&
+        this.openingWaveMembers?.has(recipient) === true &&
+        !this.openingWaveDrafted.has(recipient);
+      (holdBackForReveal ? this.heldBackQueue(recipient) : this.observations.get(recipient)!).push(
+        envelope,
+      );
       this.record("message.enqueued", recipient, envelope.id, {
         channelId: channel.id,
         bodyHash: sha256(body),
@@ -839,6 +993,15 @@ export class TeamRuntime {
     return [...this.turns.values()].reduce((sum, count) => sum + count, 0);
   }
 }
+
+/**
+ * A synthetic readyCause shared by every member revealed together at the end
+ * of the opening wave, so the scheduler's same-source check recognizes them
+ * as one wave and wakes them sequentially — the reveal is a genuinely shared
+ * cause (the round of first-turn speech as a whole), same as any other
+ * same-source wave.
+ */
+const OPENING_WAVE_REVEAL_CAUSE: MessageId = "reveal:opening-wave";
 
 function describePollOutcome(outcome: PollOutcome): string {
   if (outcome.kind === "winner") return `winner=${outcome.choice}`;

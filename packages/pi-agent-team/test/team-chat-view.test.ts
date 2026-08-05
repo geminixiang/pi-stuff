@@ -1,13 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { TeamActivity } from "../src/domain.js";
+import type { TeamActivity, TeamResult, TeamSettlement } from "../src/domain.js";
 import { selectChatIndices, TeamChatView } from "../src/team-chat-view.js";
 
 const fakeTheme = {
   fg: (_color: string, text: string) => text,
   bold: (text: string) => text,
 } as unknown as Theme;
+
+const colorTaggingTheme = {
+  fg: (color: string, text: string) => `[${color}]${text}`,
+  bold: (text: string) => text,
+} as unknown as Theme;
+
+function fakeResult(settlement: TeamSettlement): TeamResult {
+  return {
+    teamId: "t",
+    settlement,
+    objectiveVerification: "unverified",
+    members: [],
+    publicTranscript: [],
+    restrictedMessages: [],
+    events: [],
+    userInterventions: 0,
+    auditHead: "0".repeat(64),
+  };
+}
 
 function activity(overrides: Partial<TeamActivity> & { sequence: number }): TeamActivity {
   return {
@@ -51,6 +70,42 @@ test("TeamChatView renders new activity incrementally without re-processing hist
   view.update({ members, activities: second }, { expanded: true, isPartial: false }, fakeTheme);
   const thirdRender = view.render(80).join("\n");
   assert.equal(thirdRender.split("world").length - 1, 1);
+});
+
+test("only a completed settlement renders the runtime status line in success color", () => {
+  const members = [{ id: "a", name: "Alice" }];
+  const activities = [activity({ sequence: 0 })];
+
+  const completed = new TeamChatView(colorTaggingTheme);
+  completed.update(
+    { members, activities, result: fakeResult({ kind: "completed", meaning: "all-members-finished" }) },
+    { expanded: false, isPartial: false },
+    colorTaggingTheme,
+  );
+  assert.match(completed.render(80).join("\n"), /\[success\]Runtime status: completed/);
+
+  // Before this fix, "errored-members-remain" — a settlement that only
+  // exists because real members errored out — rendered in the same green
+  // as a genuine completion, just because it's a *stable* terminal state
+  // rather than a possibly-stuck one. Stable isn't the same as successful.
+  const erroredQuiescent = new TeamChatView(colorTaggingTheme);
+  erroredQuiescent.update(
+    { members, activities, result: fakeResult({ kind: "quiescent", meaning: "errored-members-remain" }) },
+    { expanded: false, isPartial: false },
+    colorTaggingTheme,
+  );
+  assert.match(
+    erroredQuiescent.render(80).join("\n"),
+    /\[warning\]Runtime status: quiescent \(errored-members-remain/,
+  );
+
+  const exhausted = new TeamChatView(colorTaggingTheme);
+  exhausted.update(
+    { members, activities, result: fakeResult({ kind: "exhausted", meaning: "max-turns-reached" }) },
+    { expanded: false, isPartial: false },
+    colorTaggingTheme,
+  );
+  assert.match(exhausted.render(80).join("\n"), /\[warning\]Runtime status: exhausted/);
 });
 
 test("TeamChatView invalidates and rebuilds rows when the theme instance changes", () => {

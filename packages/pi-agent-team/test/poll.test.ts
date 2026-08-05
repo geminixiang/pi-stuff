@@ -398,6 +398,115 @@ test("casting a vote after the poll has closed is rejected, not silently accepte
   assert.ok(result.events.some((event) => event.type === "command.failed"));
 });
 
+test("a poll becomes fully cast when the last outstanding voter finishes instead of casting, not only when they cast", async () => {
+  // Reproduces a liveness gap: POLL_FULLY_CAST used to be checked only
+  // inside castVote(). eligible/missing are computed from runnable(), which
+  // also changes on finish/error — so a poll can become fully cast purely
+  // because the one remaining non-voter finished without ever casting. Without
+  // rechecking on that transition too, a and b (who both already voted and
+  // are waiting for the notice) would never be woken, and the team goes
+  // quiescent with the poll open forever.
+  const members: TeamMember[] = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  class Coordinator {
+    readonly member = members[0];
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
+        return [
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "send", to: "b", body: "vote now" },
+          { type: "wait" },
+        ];
+      const fullyCast = turn.observations.some((message) =>
+        message.body.startsWith("POLL_FULLY_CAST"),
+      );
+      if (fullyCast) return [{ type: "vote-close", pollId: "p" }, { type: "finish", summary: "closed" }];
+      return [{ type: "wait" }];
+    }
+  }
+  class Voter {
+    readonly member = members[1];
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      if (turn.observations.some((message) => message.body === "vote now"))
+        return [
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "send", to: "c", body: "your turn — skip voting" },
+          { type: "wait" },
+        ];
+      return [{ type: "wait" }];
+    }
+  }
+  class NeverVotes {
+    readonly member = members[2];
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body === "your turn — skip voting"))
+        return [{ type: "finish", summary: "never voted" }];
+      return [{ type: "wait" }];
+    }
+  }
+  const agents = [new Coordinator(), new Voter(), new NeverVotes()];
+  const result = await new TeamRuntime(
+    "finish-triggers-fully-cast",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+
+  assert.equal(
+    result.settlement.kind,
+    "completed",
+    "without rechecking on finish, this deadlocks quiescent with the poll never closed",
+  );
+  const fullyCast = result.publicTranscript.find((message) =>
+    message.body.startsWith("POLL_FULLY_CAST"),
+  );
+  assert.ok(fullyCast, "the last non-voter finishing should still trigger the fully-cast notice");
+  assert.match(fullyCast!.body, /voters=\["a","b"\]/, "c never voted and drops out of eligible");
+  const closed = result.publicTranscript.find((message) => message.body.startsWith("POLL_CLOSED"));
+  assert.ok(closed);
+  assert.match(closed!.body, /"x":2/);
+});
+
+test("a poll with zero votes is never announced fully cast just because every member finished without voting", async () => {
+  // Guards the other edge of the same fix: if nobody ever casts, eligible
+  // shrinks to nothing as members finish, and missing (a filter over
+  // eligible) trivially becomes empty too — vacuously "fully cast" with zero
+  // data. That's not a real quorum event and must not be announced.
+  class NeverVotes {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class AlsoNeverVotes {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const agents = [new NeverVotes(), new AlsoNeverVotes()];
+  const result = await new TeamRuntime(
+    "zero-votes",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(
+    result.publicTranscript.some((message) => message.body.startsWith("POLL_FULLY_CAST")),
+    false,
+    "an unvoted poll must never be announced fully cast just because everyone finished",
+  );
+});
+
 test("an errored member drops out of quorum instead of being waited on forever", async () => {
   class Good {
     readonly member = { id: "good", name: "Good" };
