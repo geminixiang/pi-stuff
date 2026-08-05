@@ -14,6 +14,7 @@ on:
           - pi-cicd-status
           - pi-diff
           - pi-mermaid
+          - pi-agent-team
 
 permissions:
   contents: read
@@ -45,7 +46,7 @@ jobs:
           fi
 
           case "$package" in
-            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid) ;;
+            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid|pi-agent-team) ;;
             *) echo "Unsupported package: $package" >&2; exit 1 ;;
           esac
 
