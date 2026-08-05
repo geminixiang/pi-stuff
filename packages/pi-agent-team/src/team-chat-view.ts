@@ -42,7 +42,7 @@ class MessageRow implements ChatRow {
         ? theme.fg("success", "✓ finished")
         : item.kind === "error"
           ? theme.fg("error", "✗ errored")
-          : channelTag(item, theme);
+          : channelTag(item, members, theme);
     this.headerLine = `${accentWrap(item.memberId, theme.bold(speakerName))} ${theme.fg("dim", `(${item.memberId})`)}  ${tag}`;
     this.markdown = new Markdown(item.body ?? item.text, 0, 0, getMarkdownTheme());
   }
@@ -70,16 +70,32 @@ class CompactRow implements ChatRow {
   }
 }
 
-function channelTag(item: TeamActivity, theme: Theme): string {
-  const target = channelLabel(item.channel);
+function channelTag(
+  item: TeamActivity,
+  members: readonly { id: string; name: string }[],
+  theme: Theme,
+): string {
+  const target = channelLabel(item, members);
   const icon = item.visibility === "restricted" ? "🔒" : "📣";
   return theme.fg("muted", `${icon} ${target}`);
 }
 
-function channelLabel(channel: ChannelTarget): string {
-  if (channel.kind === "public") return "# everyone";
+function memberLabel(memberId: string, members: readonly { id: string; name: string }[]): string {
+  const name = members.find((member) => member.id === memberId)?.name;
+  return name ? `${name} (${memberId})` : memberId;
+}
+
+function channelLabel(
+  item: TeamActivity,
+  members: readonly { id: string; name: string }[],
+): string {
+  const { channel } = item;
+  if (channel.kind === "public") {
+    const mentions = item.mentions?.map((memberId) => memberLabel(memberId, members)).join(", ");
+    return mentions ? `# everyone → ${mentions}` : "# everyone";
+  }
   if (channel.kind === "group") return `# ${channel.channelId}`;
-  return `@ ${channel.memberId}`;
+  return `@ ${memberLabel(channel.memberId, members)}`;
 }
 
 /**

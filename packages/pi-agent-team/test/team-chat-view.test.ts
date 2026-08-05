@@ -123,3 +123,46 @@ test("TeamChatView invalidates and rebuilds rows when the theme instance changes
   const rendered = view.render(80).join("\n");
   assert.ok(rendered.includes("hello"));
 });
+
+test("a direct-channel tag names the recipient, not just their opaque id", () => {
+  const view = new TeamChatView(fakeTheme);
+  const members = [
+    { id: "mango", name: "小芒" },
+    { id: "cedar", name: "小杉" },
+  ];
+  const activities = [
+    activity({
+      sequence: 0,
+      memberId: "mango",
+      visibility: "restricted",
+      channel: { kind: "direct", memberId: "cedar" },
+      text: "psst",
+      body: "psst",
+    }),
+  ];
+  view.update({ members, activities }, { expanded: true, isPartial: true }, fakeTheme);
+  assert.ok(
+    view.render(80).join("\n").includes("@ 小杉 (cedar)"),
+    "the DM tag reads as a person, matching the speaker's own name (id) header",
+  );
+});
+
+test("a public say with mentions shows who it hands the floor to", () => {
+  const view = new TeamChatView(fakeTheme);
+  const members = [
+    { id: "mango", name: "小芒" },
+    { id: "cedar", name: "小杉" },
+  ];
+  const activities = [
+    activity({
+      sequence: 0,
+      memberId: "cedar",
+      channel: { kind: "public" },
+      mentions: ["mango"],
+      text: "your turn",
+      body: "your turn",
+    }),
+  ];
+  view.update({ members, activities }, { expanded: true, isPartial: true }, fakeTheme);
+  assert.ok(view.render(80).join("\n").includes("# everyone → 小芒 (mango)"));
+});
