@@ -1,6 +1,24 @@
 # @geminixiang/pi-agent-team
 
+[![npm](https://img.shields.io/npm/v/%40geminixiang%2Fpi-agent-team)](https://www.npmjs.com/package/@geminixiang/pi-agent-team)
+
 A rule-agnostic, mailbox-driven agent team runtime for Pi.
+
+## Install
+
+Install as a [pi package](https://github.com/earendil-works/pi) — this registers the `team_start` tool in your pi sessions:
+
+```sh
+pi install npm:@geminixiang/pi-agent-team
+```
+
+Or try it once without installing (temporary for the current run only):
+
+```sh
+pi -e npm:@geminixiang/pi-agent-team
+```
+
+`pi remove npm:@geminixiang/pi-agent-team` uninstalls it. Use `pi install -l` to write to project settings (`.pi/settings.json`) instead of user settings.
 
 ## What ships
 
@@ -36,7 +54,9 @@ The runtime follows CPU-style worker coordination rather than assigning a workfl
 
 The parent should use opaque unrelated member IDs, send the same initial objective to all members, and let them elect coordination and task order. `startMemberId` remains only as an advanced directed-start escape hatch.
 
-## Local use
+## Local development use
+
+From a checkout of this repo, load the extension straight from source:
 
 ```sh
 pi --no-extensions -e ./packages/pi-agent-team/src/extension.ts --approve

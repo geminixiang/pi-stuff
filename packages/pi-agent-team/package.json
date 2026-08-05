@@ -3,6 +3,23 @@
   "version": "0.1.0",
   "description": "Rule-agnostic independent Pi agent sessions with private mailboxes and causal audit",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-agent-team"
+  },
+  "homepage": "https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-agent-team#readme",
+  "bugs": "https://github.com/geminixiang/pi-stuff/issues",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "agent-team",
+    "multi-agent",
+    "extension"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "src",
     "README.md"
