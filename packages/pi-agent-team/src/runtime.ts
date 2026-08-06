@@ -18,8 +18,18 @@ import {
   type TeamMemberState,
   type TeamProgress,
   type TeamResult,
+  type TeamSettlement,
   type WakePolicy,
 } from "./domain.js";
+
+/**
+ * The one claim resource the runtime itself interprets. Holding it is a
+ * reporting duty, not authority: after the team settles, the runtime gives
+ * the holder one final turn whose response becomes the team's report. The
+ * name is task-agnostic — it describes a runtime mechanic (who speaks to
+ * the requester at the end), never a task rule.
+ */
+export const REPORTER_RESOURCE = "reporter";
 
 export interface TeamRuntimeOptions {
   maxTurns?: number;
@@ -33,6 +43,18 @@ export interface TeamRuntimeOptions {
    * default (0ms); a product surface opts in explicitly.
    */
   reactionDelayMs?: { min: number; max: number };
+  /**
+   * Pre-designates the member who must deliver the final report. Omit to
+   * let the team decide during play by claiming `REPORTER_RESOURCE`; when
+   * set, this designation wins over any claim.
+   */
+  reporterId?: MemberId;
+  /**
+   * Caller-supplied instructions for the report turn (format, files,
+   * audience). The runtime passes it through verbatim — the user's prompt
+   * defines the reporting protocol, not the runtime.
+   */
+  reportPrompt?: string;
   onProgress?: (progress: TeamProgress) => void;
   onActivity?: (activity: TeamActivity) => void;
 }
@@ -89,6 +111,13 @@ export class TeamRuntime {
   private auditHead = "0".repeat(64);
   private recent = "Team created";
   private started = false;
+  /**
+   * The member currently volunteered as reporter via the REPORTER_RESOURCE
+   * claim. Kept when the claim auto-releases on finish (finishing your work
+   * doesn't renounce the duty), cleared on voluntary release or error, and
+   * overwritten if someone claims the freed resource afterward.
+   */
+  private claimedReporter?: MemberId;
 
   constructor(
     readonly objective: string,
@@ -106,6 +135,8 @@ export class TeamRuntime {
     const sessionIds = [...agents.values()].map((agent) => agent.sessionId);
     if (new Set(sessionIds).size !== sessionIds.length)
       throw new Error("Agent session IDs must be unique");
+    if (options.reporterId !== undefined && !agents.has(options.reporterId))
+      throw new Error(`Unknown reporterId: ${options.reporterId}`);
   }
 
   /**
@@ -238,15 +269,19 @@ export class TeamRuntime {
       undefined,
       { finished: this.finished.size, errored: this.errored.size },
     );
+    const { report, reportError } = await this.collectReport(settlement, signal);
     return Object.freeze({
       teamId: this.teamId,
       settlement,
       objectiveVerification: "unverified" as const,
+      report,
+      reportError,
       members: Object.freeze(
         [...this.agents.values()].map((agent) =>
           Object.freeze({
             id: agent.member.id,
             sessionId: agent.sessionId,
+            sessionRef: agent.sessionRef,
             turns: this.turns.get(agent.member.id) ?? 0,
             state: this.states.get(agent.member.id) ?? "idle",
             summary: this.finished.get(agent.member.id),
@@ -282,6 +317,72 @@ export class TeamRuntime {
       userInterventions: 0 as const,
       auditHead: this.auditHead,
     });
+  }
+
+  /**
+   * The report turn: one extra prompt to the reporter's session after the
+   * team settled, whose final response is the team's report. The reporter is
+   * the pre-designated `options.reporterId` if given, else whoever last
+   * validly held the REPORTER_RESOURCE claim. The runtime verifies only that
+   * a response exists — its content, format, and any files it references are
+   * the reporter's business (invariant 12: settlement never asserts
+   * correctness, and neither does a report). No reporter → no report, and
+   * the result says so honestly instead of the runtime writing one itself.
+   */
+  private async collectReport(
+    settlement: TeamSettlement,
+    signal?: AbortSignal,
+  ): Promise<{ report?: { reporterId: MemberId; body: string }; reportError?: string }> {
+    const reporterId = this.options.reporterId ?? this.claimedReporter;
+    if (reporterId === undefined) return {};
+    const agent = this.agents.get(reporterId)!;
+    if (this.errored.has(reporterId))
+      return {
+        reportError: `reporter ${reporterId} errored before reporting: ${this.errored.get(reporterId)}`,
+      };
+    if (!agent.report)
+      return { reportError: `reporter ${reporterId} does not support a report turn` };
+    this.record("report.requested", reporterId, undefined, {
+      designated: this.options.reporterId !== undefined,
+      settlement: settlement.kind,
+    });
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", relayAbort, { once: true });
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`Reporter ${reporterId} timed out`)),
+      this.options.actionTimeoutMs ?? 300_000,
+    );
+    try {
+      const body = await agent.report(this.reportTurnPrompt(settlement), controller.signal);
+      this.record("report.submitted", reporterId, undefined, { bodyHash: sha256(body) });
+      this.emitActivity(
+        reporterId,
+        "report",
+        "final report",
+        { kind: "public" },
+        [...this.agents.keys()],
+        body,
+      );
+      return { report: Object.freeze({ reporterId, body }) };
+    } catch (cause) {
+      if (signal?.aborted) throw cause;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.record("report.failed", reporterId, undefined, { error: message });
+      return { reportError: message };
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", relayAbort);
+    }
+  }
+
+  private reportTurnPrompt(settlement: TeamSettlement): string {
+    return [
+      `TEAM SETTLED: ${settlement.kind} (${settlement.meaning}).`,
+      "You are the team's reporter; this is one final turn after the whole team settled. Team coordination tools are inactive — write for the requester who started the team, not for your teammates.",
+      this.options.reportPrompt ??
+        "Deliver the team's final report. Your response is returned verbatim to the requester as the team's result, so it must stand alone: state the outcome and everything the objective asked for. If your work produced files, reference their paths.",
+    ].join("\n");
   }
 
   /**
@@ -678,6 +779,7 @@ export class TeamRuntime {
     const owner = this.claims.get(resource);
     if (!owner) {
       this.claims.set(resource, from);
+      if (resource === REPORTER_RESOURCE) this.claimedReporter = from;
       this.record("member.claimed", from, undefined, { resource });
       this.emitActivity(from, "claim", `claimed ${resource}`, { kind: "direct", memberId: from }, [
         from,
@@ -717,6 +819,12 @@ export class TeamRuntime {
 
   private releaseClaim(resource: string, owner: MemberId, reason: string): void {
     this.claims.delete(resource);
+    // Finishing releases the claim (so another member could take over) but
+    // keeps the duty: a reporter who finished their work still reports.
+    // A voluntary release is a renunciation; an error means the session
+    // can't be trusted to take the report turn.
+    if (resource === REPORTER_RESOURCE && this.claimedReporter === owner && reason !== "member-finished")
+      this.claimedReporter = undefined;
     this.record("claim.released", owner, undefined, { resource, reason });
     this.emitActivity(owner, "claim", `released ${resource}`, { kind: "direct", memberId: owner }, [
       owner,

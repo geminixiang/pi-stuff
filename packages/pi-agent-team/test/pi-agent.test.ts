@@ -48,6 +48,7 @@ interface FakeSession {
   prompt(text: string): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
+  getLastAssistantText?(): string | undefined;
 }
 
 interface AgentInternals {
@@ -81,6 +82,69 @@ test("a provider failure after a non-terminal command was queued rethrows instea
     agent.act(baseTurn(), new AbortController().signal),
     /provider exploded mid-turn/,
   );
+});
+
+test("report() sends the prompt and returns the last assistant text verbatim", async () => {
+  const agent = new PiTeamAgent({ id: "a", name: "A" }, "/tmp", {} as never);
+  const internals = agent as unknown as { session: FakeSession };
+  let prompted: string | undefined;
+  internals.session = {
+    sessionId: "fake-session",
+    prompt: async (text) => {
+      prompted = text;
+    },
+    abort: async () => {},
+    dispose: () => {},
+    getLastAssistantText: () => "the final report",
+  };
+  const body = await agent.report("REPORT NOW", new AbortController().signal);
+  assert.equal(body, "the final report");
+  assert.equal(prompted, "REPORT NOW");
+});
+
+test("a report turn that produces no assistant text rejects instead of returning emptiness", async () => {
+  const agent = new PiTeamAgent({ id: "a", name: "A" }, "/tmp", {} as never);
+  const internals = agent as unknown as { session: FakeSession };
+  internals.session = {
+    sessionId: "fake-session",
+    prompt: async () => {},
+    abort: async () => {},
+    dispose: () => {},
+    getLastAssistantText: () => "   ",
+  };
+  await assert.rejects(
+    agent.report("REPORT NOW", new AbortController().signal),
+    /no final response/,
+  );
+});
+
+test("team tools called mid-report get a settled notice: nothing queues and the prompt is not aborted", async () => {
+  // A reporter reflexively calling team_say/team_finish during the report
+  // turn must neither reopen the settled runtime (queued commands) nor cut
+  // its own report short (the turn-ending self-abort).
+  const agent = new PiTeamAgent({ id: "a", name: "A" }, "/tmp", {} as never);
+  const internals = agent as unknown as {
+    session: FakeSession;
+    turnState: TurnState;
+    queueCommand(command: unknown, confirmation: string): { content: [{ text: string }] };
+  };
+  let aborted = 0;
+  internals.session = {
+    sessionId: "fake-session",
+    prompt: async () => {
+      const outcome = internals.queueCommand({ type: "finish", summary: "x" }, "finished");
+      assert.match(outcome.content[0].text, /TEAM_SETTLED/);
+    },
+    abort: async () => {
+      aborted += 1;
+    },
+    dispose: () => {},
+    getLastAssistantText: () => "final",
+  };
+  const body = await agent.report("REPORT NOW", new AbortController().signal);
+  assert.equal(body, "final");
+  assert.equal(aborted, 0);
+  assert.equal(internals.turnState.queued.length, 0);
 });
 
 test("the self-abort raised by a turn-ending command is still swallowed and the full batch committed", async () => {

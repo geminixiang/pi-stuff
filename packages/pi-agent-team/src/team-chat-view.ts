@@ -1,13 +1,28 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Markdown, type Component, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { TeamActivity, TeamMemberState, TeamProgress, TeamResult } from "./domain.js";
+import type { TeamActivity, TeamMemberState, TeamProgress, TeamSettlement } from "./domain.js";
 import { accentWrap } from "./member-colors.js";
+
+/**
+ * The settlement slice the view needs — deliberately NOT the full
+ * TeamResult. The final details are serialized into the parent session's
+ * JSONL, so anything here is paid for on every save/resume; transcripts,
+ * events, and message bodies live in member session files instead.
+ */
+export interface TeamDisplaySettlement {
+  settlement: TeamSettlement;
+  members: readonly { id: string; turns: number; summary?: string }[];
+  report?: { reporterId: string };
+  reportError?: string;
+}
 
 export interface TeamDisplayDetails {
   members: readonly { id: string; name: string }[];
   activities: readonly TeamActivity[];
+  /** Earliest activities dropped from this card's bounded final snapshot. */
+  omittedActivities?: number;
   progress?: TeamProgress;
-  result?: TeamResult;
+  result?: TeamDisplaySettlement;
 }
 
 export interface TeamChatViewOptions {
@@ -42,7 +57,9 @@ class MessageRow implements ChatRow {
         ? theme.fg("success", "✓ finished")
         : item.kind === "error"
           ? theme.fg("error", "✗ errored")
-          : channelTag(item, members, theme);
+          : item.kind === "report"
+            ? theme.fg("accent", "📋 final report")
+            : channelTag(item, members, theme);
     this.headerLine = `${accentWrap(item.memberId, theme.bold(speakerName))} ${theme.fg("dim", `(${item.memberId})`)}  ${tag}`;
     this.markdown = new Markdown(item.body ?? item.text, 0, 0, getMarkdownTheme());
   }
@@ -120,10 +137,20 @@ export class TeamChatView implements Component {
       this.syncedCount = 0;
       this.rows = [];
     }
+    // The final snapshot may be a bounded suffix of the live stream (the
+    // extension trims activities before persisting); a shrink invalidates
+    // the incremental row cache, whose indices assume append-only growth.
+    if (details.activities.length < this.syncedCount) {
+      this.rows = [];
+      this.syncedCount = 0;
+    }
     for (let index = this.syncedCount; index < details.activities.length; index++) {
       const item = details.activities[index];
       this.rows.push(
-        item.kind === "message" || item.kind === "finish" || item.kind === "error"
+        item.kind === "message" ||
+        item.kind === "finish" ||
+        item.kind === "error" ||
+        item.kind === "report"
           ? new MessageRow(item, details.members, this.theme)
           : new CompactRow(item, details.members, this.theme),
       );
@@ -154,6 +181,13 @@ export class TeamChatView implements Component {
       "",
     ];
 
+    if (details.omittedActivities)
+      lines.push(
+        theme.fg(
+          "muted",
+          `(${details.omittedActivities} earliest activities omitted from this card — full histories live in member session files)`,
+        ),
+      );
     const visibleIndices = options.expanded
       ? [...details.activities.keys()]
       : selectChatIndices(details.activities);
@@ -187,6 +221,15 @@ export class TeamChatView implements Component {
           `Runtime status: ${details.result.settlement.kind} (${details.result.settlement.meaning}; objective correctness is not verified)`,
         ),
       );
+    if (details.result?.report)
+      lines.push(
+        theme.fg(
+          "success",
+          `Final report by ${memberLabel(details.result.report.reporterId, details.members)}`,
+        ),
+      );
+    else if (details.result?.reportError)
+      lines.push(theme.fg("warning", `Final report missing: ${details.result.reportError}`));
     // This view combines dynamic names, ids, channel audiences, and runtime
     // text. Any of them can be wider than the terminal (notably a public
     // message mentioning a large team), so enforce the Component width

@@ -25,6 +25,8 @@ pi -e npm:@geminixiang/pi-agent-team
 Production code knows nothing about relay counting, werewolf, expected answers, roles, or phases. It provides only generic coordination — including a generic vote tally, not a domain-specific one: the runtime counts opaque choices and reports ties honestly, it never knows what a vote is *for*.
 
 - independent member identities and unique Pi `AgentSession`s with full pi-coding-agent capability (only extensions are withheld, so a member cannot recursively start teams); ids are validated unique, non-empty, and free of collisions with the runtime's own reserved principal ids ("user", "runtime") or the extension's "all" sentinel;
+- member sessions persisted to the project's default Pi session directory (named `agent team · <name> (<id>)`, linked to the parent via `parentSession`), so every member's full first-person history survives the run — and even a mid-run crash — and is readable/resumable with ordinary Pi session tooling; the result carries each member's `sessionId` and `sessionRef` (file path);
+- a post-settlement **report turn**: the reporter — pre-designated via `reporterId`, or whoever last validly held the special `"reporter"` claim (kept on finish, renounced by voluntary release, cleared on error) — gets one final prompt after the team settles, and its response is returned verbatim as the team's report; `reportPrompt` passes the caller's reporting instructions through untouched, and with no reporter the result honestly says so instead of the runtime writing one itself;
 - direct `team_dm` and explicit `team_handoff`; a recipient may be named by member id or by an unambiguous display name — a name shared by two members, or matching none, bounces rather than being guessed at; sending to yourself bounces the same way instead of silently vanishing;
 - public `team_say` (passive by default; mentioning teammates in `to` keeps the message public while waking exactly the mentioned members to reply — the normal way to hold a conversation without a DM restating the public message) and `team_broadcast` (interrupts everyone at once; use sparingly);
 - immutable restricted groups through `team_group_create` and `team_group_send`;
@@ -37,7 +39,8 @@ Production code knows nothing about relay counting, werewolf, expected answers, 
 - error degradation: a member whose turn fails becomes `errored`, announced publicly, and messages to it bounce back to the sender;
 - a final flush wake that delivers undelivered passive observations before the team settles;
 - hash-chained causal audit events with private bodies redacted;
-- two live views for two audiences, both TUI-only: a Discord-style presence roster (who's speaking, who they last addressed, who's idle/finished/errored) pinned above the editor for the duration of the run, and a full blow-by-blow chat transcript in the tool-result card for debugging and as the permanent session record.
+- two live views for two audiences, both TUI-only: a Discord-style presence roster (who's speaking, who they last addressed, who's idle/finished/errored) pinned above the editor for the duration of the run, and a full blow-by-blow chat transcript in the tool-result card for debugging;
+- a **bounded final result**: the model-visible tool content is the reporter's report plus a pointer-based manifest (settlement, per-member state/turns/session pointers, message and event *counts*, audit head) — never the raw transcript or event log, which once returned ~1.2M chars from a single game and forced a split-turn compaction of the parent session; the persisted display snapshot is likewise capped at the last 200 activities. The permanent record is the member session files, not the tool result.
 
 ## Coordination model
 
@@ -68,7 +71,7 @@ Example prompt:
 Call team_start once. Create 8 members with opaque, unrelated IDs and names. Do not encode order in IDs, names, or member array position. Objective: autonomously coordinate so every member publicly says exactly one distinct number and the public sequence is 1 through 8. Omit startMemberId and send every member the same initial message: "Elect a coordinator using team_claim. Negotiate an order using directed messages, not peer-list position. Directed handoff wakes the next worker; public speech does not wake peers. Each worker must call team_say with its number before team_finish. Complete without user help." Do not inject later messages or expected answers.
 ```
 
-`team_start` accepts an objective, roster, one initial message, and either one starting member or all members. After launch, only member tool calls route subsequent messages.
+`team_start` accepts an objective, roster, one initial message, and either one starting member or all members; optional `reporterId` pre-designates who delivers the final report, and optional `reportPrompt` carries the caller's reporting instructions (format, files, language) verbatim into that final turn. After launch, only member tool calls route subsequent messages.
 
 ## Honest acceptance scope
 

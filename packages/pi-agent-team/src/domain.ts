@@ -128,7 +128,21 @@ export interface PollResult {
 export interface TeamAgent {
   readonly member: TeamMember;
   readonly sessionId: string;
+  /**
+   * Durable pointer to this member's full first-person history (for Pi
+   * agents, the session JSONL file path) when the adapter persists one.
+   * The runtime copies it verbatim into the result so a caller can trace
+   * what any member saw and did without the runtime carrying transcripts.
+   */
+  readonly sessionRef?: string;
   act(turn: TeamTurn, signal: AbortSignal): Promise<readonly TeamCommand[]>;
+  /**
+   * One extra LLM turn after the team settles: the runtime prompts the
+   * designated reporter and the final assistant response is returned
+   * verbatim as the team's report. Coordination is over by then — the
+   * adapter must not queue team commands from this turn.
+   */
+  report?(prompt: string, signal: AbortSignal): Promise<string>;
   close?(): Promise<void> | void;
 }
 
@@ -149,6 +163,9 @@ export interface AuditEvent {
     | "poll.closed"
     | "member.finished"
     | "member.errored"
+    | "report.requested"
+    | "report.submitted"
+    | "report.failed"
     | "command.failed"
     | "observer.failed"
     | "team.completed"
@@ -176,7 +193,7 @@ export interface TeamProgress {
 export interface TeamActivity {
   sequence: number;
   memberId: PrincipalId;
-  kind: "message" | "wake" | "claim" | "vote" | "finish" | "wait" | "channel" | "error";
+  kind: "message" | "wake" | "claim" | "vote" | "finish" | "wait" | "channel" | "error" | "report";
   text: string;
   visibility: "public" | "restricted";
   channel: ChannelTarget;
@@ -196,9 +213,20 @@ export interface TeamResult {
   teamId: string;
   settlement: TeamSettlement;
   objectiveVerification: "unverified";
+  /**
+   * The reporter's post-settlement turn, verbatim. Present only when a
+   * reporter existed (designated via options or by holding the "reporter"
+   * claim) and its report turn produced a response. The runtime records
+   * who reported and what they said; it never judges the content — same
+   * discipline as `objectiveVerification`.
+   */
+  report?: { reporterId: MemberId; body: string };
+  /** Why no report exists despite a reporter being designated. */
+  reportError?: string;
   members: readonly {
     id: MemberId;
     sessionId: string;
+    sessionRef?: string;
     turns: number;
     state: TeamMemberState;
     summary?: string;

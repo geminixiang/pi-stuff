@@ -1,11 +1,28 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { assertValidMemberId, type TeamActivity, type TeamProgress } from "./domain.js";
+import {
+  assertValidMemberId,
+  type TeamActivity,
+  type TeamProgress,
+  type TeamResult,
+} from "./domain.js";
 import { PiTeamAgent } from "./pi-agent.js";
 import { TeamRuntime } from "./runtime.js";
 import { TeamChatView, type TeamDisplayDetails } from "./team-chat-view.js";
 import { TeamRosterWidget } from "./team-roster-widget.js";
+
+/**
+ * The final tool result is written into the parent session's JSONL and (for
+ * `content`) into the parent model's context, so both must stay bounded no
+ * matter how chatty the team was. A live werewolf run once returned ~1.2M
+ * chars of content plus ~1.2M chars of details and forced a split-turn
+ * compaction of the parent session; the cap below plus renderFinalContent's
+ * pointer-based manifest is what prevents a recurrence. Full histories are
+ * not lost — every member session is persisted to disk and referenced by
+ * path in the manifest.
+ */
+const MAX_FINAL_ACTIVITIES = 200;
 
 /**
  * Runs before `params.members` collapses into a `Map<MemberId, TeamAgent>`
@@ -42,6 +59,8 @@ export default function agentTeam(pi: ExtensionAPI): void {
       "Never encode task order in member IDs, names, array order, objective, or initial message.",
       "After starting, do not act for members or inject additional messages.",
       "Do not guess a maxTurns value; the team runtime supplies a safe default.",
+      'When the request implies a natural reporter (a judge, coordinator, or integrator), pass reporterId; otherwise state in the objective how the team should decide who claims the "reporter" resource.',
+      "Use reportPrompt to pass the user's requirements for the final report (format, files, language) verbatim.",
     ],
     parameters: Type.Object(
       {
@@ -56,12 +75,27 @@ export default function agentTeam(pi: ExtensionAPI): void {
               "Advanced directed-start escape hatch. Omit for symmetric autonomous coordination.",
           }),
         ),
+        reporterId: Type.Optional(
+          Type.String({
+            description:
+              'Member who must deliver the team\'s final report after settlement. Omit to let the team choose during play by claiming the "reporter" resource.',
+          }),
+        ),
+        reportPrompt: Type.Optional(
+          Type.String({
+            description:
+              "Instructions for the final report turn (format, files, language, audience). Omit for a generic final-report request.",
+          }),
+        ),
         initialMessage: Type.String(),
       },
       { additionalProperties: false },
     ),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       assertUniqueMemberRoster(params.members);
+      const reporterId = params.reporterId?.trim() || undefined;
+      if (reporterId && !params.members.some((member) => member.id === reporterId))
+        throw new Error(`Unknown reporterId: ${reporterId}`);
       const activities: TeamActivity[] = [];
       let progress: TeamProgress | undefined;
       const details = (): TeamDisplayDetails => ({
@@ -103,6 +137,8 @@ export default function agentTeam(pi: ExtensionAPI): void {
         // Staggers who starts (and visually lights up) within a concurrent
         // wave, so a burst of claim contenders doesn't glow all at once.
         reactionDelayMs: { min: 50, max: 500 },
+        reporterId,
+        reportPrompt: params.reportPrompt,
         onActivity(activity) {
           activities.push(activity);
           update();
@@ -123,8 +159,8 @@ export default function agentTeam(pi: ExtensionAPI): void {
           signal,
         );
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: { ...details(), result },
+          content: [{ type: "text", text: renderFinalContent(result, params.members) }],
+          details: finalDetails(details(), result),
         };
       } finally {
         if (usesWidget) ctx.ui.setWidget(widgetKey, undefined);
@@ -160,4 +196,79 @@ export default function agentTeam(pi: ExtensionAPI): void {
 function summarizeLive(details: TeamDisplayDetails): string {
   const latest = details.activities.at(-1);
   return `${details.progress?.turns ?? 0} turns · ${details.progress?.finished.length ?? 0}/${details.members.length} finished${latest ? ` · ${latest.memberId}: ${latest.text}` : ""}`;
+}
+
+/**
+ * The model-visible tool result: the reporter's verbatim report (naturally
+ * bounded — it is one LLM turn's final response) plus a pointer-based
+ * manifest. Transcripts, restricted messages, and audit events appear only
+ * as counts; the durable detail lives in the per-member session files the
+ * manifest points at.
+ */
+export function renderFinalContent(
+  result: TeamResult,
+  members: readonly { id: string; name: string }[],
+): string {
+  const nameOf = (id: string) => members.find((member) => member.id === id)?.name ?? id;
+  const lines: string[] = [];
+  if (result.report) {
+    lines.push(
+      `FINAL REPORT — ${nameOf(result.report.reporterId)} (${result.report.reporterId}):`,
+      "",
+      result.report.body,
+      "",
+      "---",
+    );
+  } else {
+    lines.push(
+      `NO FINAL REPORT: ${result.reportError ?? 'no member was designated or claimed "reporter"'}. The finish summaries below are the only per-member conclusions.`,
+      "",
+      "---",
+    );
+  }
+  lines.push(
+    "TEAM MANIFEST",
+    `team: ${result.teamId}`,
+    `settlement: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+    "members:",
+  );
+  for (const member of result.members) {
+    lines.push(
+      `- ${member.id} (${nameOf(member.id)}) · ${member.state} · ${member.turns} turns · session ${member.sessionId}${member.sessionRef ? ` · ${member.sessionRef}` : ""}`,
+    );
+    if (member.summary) lines.push(`  finish summary: ${member.summary}`);
+    if (member.error) lines.push(`  error: ${member.error}`);
+  }
+  lines.push(
+    `messages: ${result.publicTranscript.length} public · ${result.restrictedMessages.length} restricted (bodies not included here)`,
+    `audit: ${result.events.length} events · head ${result.auditHead}`,
+    "Each member's full first-person history is in its session file listed above.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * The persisted display snapshot: bounded activities suffix plus the
+ * settlement slice TeamChatView renders — never the full TeamResult, whose
+ * transcript/events would otherwise be serialized into the parent session
+ * a second time.
+ */
+export function finalDetails(live: TeamDisplayDetails, result: TeamResult): TeamDisplayDetails {
+  const omitted = Math.max(0, live.activities.length - MAX_FINAL_ACTIVITIES);
+  return {
+    members: live.members,
+    activities: Object.freeze(live.activities.slice(-MAX_FINAL_ACTIVITIES)),
+    ...(omitted ? { omittedActivities: omitted } : {}),
+    progress: live.progress,
+    result: {
+      settlement: result.settlement,
+      members: result.members.map((member) => ({
+        id: member.id,
+        turns: member.turns,
+        summary: member.summary,
+      })),
+      ...(result.report ? { report: { reporterId: result.report.reporterId } } : {}),
+      ...(result.reportError !== undefined ? { reportError: result.reportError } : {}),
+    },
+  };
 }
