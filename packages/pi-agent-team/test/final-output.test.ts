@@ -23,6 +23,7 @@ function chattyResult(overrides: Partial<TeamResult> = {}): TeamResult {
         turns: 39,
         state: "finished",
         summary: "主持完畢",
+        reflection: { status: "submitted", path: ".pi/agents/judge/memory/lessons/x.md" },
       },
       {
         id: "p1",
@@ -31,6 +32,7 @@ function chattyResult(overrides: Partial<TeamResult> = {}): TeamResult {
         turns: 19,
         state: "finished",
         summary: "查驗了三人",
+        reflection: { status: "no-lesson" },
       },
     ],
     publicTranscript: Array.from({ length: 100 }, (_, index) => ({
@@ -53,6 +55,8 @@ test("final content carries the report and session pointers but never transcript
   assert.match(text, /狼人陣營獲勝/);
   assert.match(text, /\/sessions\/judge\.jsonl/);
   assert.match(text, /100 public/);
+  assert.match(text, /reflection: submitted/);
+  assert.match(text, /reflection: no-lesson/);
   assert.doesNotMatch(text, /TRANSCRIPT-BODY/);
   // The whole point: a 100-message game must not re-inflate the parent
   // context. The manifest is pointers and counts, so it stays small even

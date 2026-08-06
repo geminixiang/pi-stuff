@@ -125,6 +125,17 @@ export interface PollResult {
   outcome: PollOutcome;
 }
 
+export type ReflectionOutcome =
+  | { status: "submitted"; path?: string }
+  | { status: "no-lesson" }
+  | { status: "failed"; code: string; error: string };
+
+export interface TeamReflectionContext {
+  settlement: TeamSettlement;
+  report?: { reporterId: MemberId; body: string };
+  reportError?: string;
+}
+
 export interface TeamAgent {
   readonly member: TeamMember;
   readonly sessionId: string;
@@ -143,6 +154,11 @@ export interface TeamAgent {
    * adapter must not queue team commands from this turn.
    */
   report?(prompt: string, signal: AbortSignal): Promise<string>;
+  /** Post-report reflection. Implementations must return only model output; the runtime owns metadata and persistence. */
+  reflect?(
+    context: TeamReflectionContext,
+    signal: AbortSignal,
+  ): Promise<"no-lesson" | { path?: string }>;
   close?(): Promise<void> | void;
 }
 
@@ -166,6 +182,9 @@ export interface AuditEvent {
     | "report.requested"
     | "report.submitted"
     | "report.failed"
+    | "reflection.submitted"
+    | "reflection.noLesson"
+    | "reflection.failed"
     | "command.failed"
     | "observer.failed"
     | "team.completed"
@@ -231,6 +250,7 @@ export interface TeamResult {
     state: TeamMemberState;
     summary?: string;
     error?: string;
+    reflection: ReflectionOutcome;
   }[];
   publicTranscript: readonly {
     id: MessageId;

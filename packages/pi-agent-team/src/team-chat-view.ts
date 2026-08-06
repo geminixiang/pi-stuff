@@ -1,6 +1,12 @@
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Markdown, type Component, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { TeamActivity, TeamMemberState, TeamProgress, TeamSettlement } from "./domain.js";
+import type {
+  ReflectionOutcome,
+  TeamActivity,
+  TeamMemberState,
+  TeamProgress,
+  TeamSettlement,
+} from "./domain.js";
 import { accentWrap } from "./member-colors.js";
 
 /**
@@ -11,7 +17,12 @@ import { accentWrap } from "./member-colors.js";
  */
 export interface TeamDisplaySettlement {
   settlement: TeamSettlement;
-  members: readonly { id: string; turns: number; summary?: string }[];
+  members: readonly {
+    id: string;
+    turns: number;
+    summary?: string;
+    reflection: ReflectionOutcome;
+  }[];
   report?: { reporterId: string };
   reportError?: string;
 }
@@ -230,6 +241,13 @@ export class TeamChatView implements Component {
       );
     else if (details.result?.reportError)
       lines.push(theme.fg("warning", `Final report missing: ${details.result.reportError}`));
+    if (details.result)
+      lines.push(
+        theme.fg(
+          "muted",
+          `Reflections: ${details.result.members.map((member) => `${member.id}=${member.reflection.status}`).join(" · ")}`,
+        ),
+      );
     // This view combines dynamic names, ids, channel audiences, and runtime
     // text. Any of them can be wider than the terminal (notably a public
     // message mentioning a large team), so enforce the Component width
