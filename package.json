@@ -12,8 +12,8 @@
     "test": "npm test --workspaces --if-present",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
-    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,tool-catalog,memory,hooks}/**/*.{ts,json,md}'",
-    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,tool-catalog,memory,hooks}/**/*.{ts,json,md}'",
+    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks}/**/*.{ts,json,md}'",
+    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks}/**/*.{ts,json,md}'",
     "verify": "npm run check && npm test && npm run lint && npm run fmt:check",
     "pack:check": "npm pack --dry-run --workspaces"
   },

@@ -14,7 +14,6 @@ Monorepo for `@geminixiang` packages that extend the [Pi coding agent](https://g
 | [`@geminixiang/pi-task-protocol`](packages/pi-task-protocol) | 0.1.0                                                                                                                             | Versioned contracts for durable local tasks, events, output cursors, and lifecycle transitions.      |
 | [`@geminixiang/pi-supervisor`](packages/pi-supervisor)       | 0.1.0                                                                                                                             | Run shell-free processes and services through a crash-reconciled local task daemon.                  |
 | [`@geminixiang/pi-verification`](packages/pi-verification)   | 0.1.0                                                                                                                             | Run project verification plans through the supervisor and retain fresh, redacted evidence.           |
-| [`@geminixiang/pi-tool-catalog`](packages/pi-tool-catalog)   | 0.1.0                                                                                                                             | Search and safely activate explicitly deferred Pi tools.                                             |
 | [`@geminixiang/pi-memory`](packages/pi-memory)               | 0.1.0                                                                                                                             | Store reviewed cross-session memory with provenance and an auditable lifecycle.                      |
 | [`@geminixiang/pi-hooks`](packages/pi-hooks)                 | 0.1.0                                                                                                                             | Run project or user commands automatically on agent events, including denying a tool call.           |
 | [`@geminixiang/pi-remember`](packages/pi-remember)           | 0.1.0                                                                                                                             | Skill that records durable decisions into `AGENTS.md`.                                               |
@@ -26,7 +25,7 @@ The new runtime packages form a layered suite:
 ```text
 pi-supervisor ──> pi-task-protocol
 pi-verification ──> pi-supervisor
-pi-tool-catalog and pi-memory remain independent extensions
+pi-memory and pi-hooks remain independent extensions
 ```
 
 `pi-supervisor` also exposes a process-local client for the public `pi-subagents` v2 event-bus RPC. It does not claim durable subagent identity because the upstream public interface currently exposes only ping, spawn, and stop.

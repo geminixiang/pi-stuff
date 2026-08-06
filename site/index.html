@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="pi-stuff — adaptable capabilities for Pi. Durable tasks, discoverable tools, verification evidence, and reviewed memory.">
+  <meta name="description" content="pi-stuff — adaptable capabilities for Pi. Durable tasks, verification evidence, and reviewed memory.">
   <meta name="theme-color" content="#f3f1ea">
   <meta property="og:type" content="website">
   <meta property="og:title" content="pi-stuff — capabilities, when needed">
-  <meta property="og:description" content="Durable tasks, discoverable tools, verification evidence, and reviewed memory for Pi.">
+  <meta property="og:description" content="Durable tasks, verification evidence, and reviewed memory for Pi.">
   <meta property="og:image" content="/social-card.svg">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="pi-stuff — capabilities, when needed">
@@ -52,10 +52,10 @@
 
     <section class="manifesto" aria-labelledby="manifesto-title">
       <p class="section-index">01 / Premise</p>
-      <h2 id="manifesto-title" class="statement reveal">A capable agent doesn’t need everything <em>loaded</em>. It needs the right thing <em>available</em>.</h2>
+      <h2 id="manifesto-title" class="statement reveal">A capable agent doesn’t run a bigger core. It uses <em>the work</em> to decide.</h2>
       <div class="manifesto-note reveal">
         <span class="rule"></span>
-        <p>pi-stuff is a modular layer around Pi: persistent work without a bloated core, tools found on demand, claims backed by evidence, and memory that remains reviewable.</p>
+        <p>pi-stuff is a modular layer around Pi: persistent work without a bloated core, claims backed by evidence, and memory that remains reviewable.</p>
       </div>
     </section>
 
@@ -86,26 +86,9 @@
       </div>
     </section>
 
-    <section class="discovery chapter" aria-labelledby="discovery-title">
-      <div class="chapter-heading">
-        <p class="section-index">03 / Tool discoverability</p>
-        <h2 id="discovery-title" class="reveal">Not more tools<br>in context.<br><span>Better access.</span></h2>
-      </div>
-      <div class="catalog-demo reveal" aria-label="Tool catalog search example">
-        <div class="catalog-top"><span>tool catalog</span><span>09 available</span></div>
-        <div class="search-row"><span aria-hidden="true">⌕</span><code>verify changed code</code><kbd>↵</kbd></div>
-        <ul>
-          <li><span class="rank">01</span><div><strong>verification_run</strong><small>Run project checks and retain evidence</small></div><span class="match">96%</span></li>
-          <li><span class="rank">02</span><div><strong>simplify_candidates</strong><small>Find excess in changed code</small></div><span class="match">84%</span></li>
-          <li><span class="rank">03</span><div><strong>cicd_status</strong><small>Inspect GitHub checks and workflows</small></div><span class="match">71%</span></li>
-        </ul>
-        <p class="catalog-caption">Search metadata first. Activate explicitly. Keep the working context focused.</p>
-      </div>
-    </section>
-
     <section class="evidence chapter chapter-signal" aria-labelledby="evidence-title">
       <div class="evidence-mark" aria-hidden="true">✓</div>
-      <p class="section-index">04 / Evidence</p>
+      <p class="section-index">03 / Evidence</p>
       <h2 id="evidence-title" class="reveal">“Done” is not<br>a feeling.</h2>
       <div class="evidence-grid">
         <p class="evidence-lede reveal">Verification turns a claim into a retained, fresh, redacted record.</p>
@@ -129,7 +112,7 @@
         <span class="memory-core">M</span>
       </div>
       <div class="memory-copy">
-        <p class="section-index">05 / Reviewed memory</p>
+        <p class="section-index">04 / Reviewed memory</p>
         <h2 id="memory-title" class="reveal">Remember with<br><span>receipts.</span></h2>
         <p class="reveal">Cross-session memory is proposed, not silently absorbed. Every record carries provenance, confidence, lifecycle, and optional expiry. You decide what becomes active.</p>
         <ol class="lifecycle reveal" aria-label="Memory record lifecycle">
@@ -142,24 +125,23 @@
 
     <section class="ecosystem" id="packages" aria-labelledby="packages-title">
       <div class="ecosystem-head">
-        <div><p class="section-index">06 / The ecosystem</p><h2 id="packages-title">Choose your<br>capabilities.</h2></div>
+        <div><p class="section-index">05 / The ecosystem</p><h2 id="packages-title">Choose your<br>capabilities.</h2></div>
         <p>Install one. Combine several. Pi remains legible while the system grows around it.</p>
       </div>
       <div class="package-list">
         <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-supervisor"><span class="package-no">01</span><strong>supervisor</strong><span>Durable local tasks & services</span><i aria-hidden="true">↗</i></a>
         <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-task-protocol"><span class="package-no">02</span><strong>task protocol</strong><span>Versioned lifecycle contracts</span><i aria-hidden="true">↗</i></a>
         <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-verification"><span class="package-no">03</span><strong>verification</strong><span>Fresh, retained evidence</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-tool-catalog"><span class="package-no">04</span><strong>tool catalog</strong><span>Deferred tool discovery</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-memory"><span class="package-no">05</span><strong>memory</strong><span>Reviewed cross-session context</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-simplify"><span class="package-no">06</span><strong>simplify</strong><span>Less code after the work</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-diff"><span class="package-no">07</span><strong>diff</strong><span>Browser-native code review</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-cicd-status"><span class="package-no">08</span><strong>cicd status</strong><span>GitHub pipeline inspection</span><i aria-hidden="true">↗</i></a>
-        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-mermaid"><span class="package-no">09</span><strong>mermaid</strong><span>Diagrams inside the terminal</span><i aria-hidden="true">↗</i></a>
+        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-memory"><span class="package-no">04</span><strong>memory</strong><span>Reviewed cross-session context</span><i aria-hidden="true">↗</i></a>
+        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-simplify"><span class="package-no">05</span><strong>simplify</strong><span>Less code after the work</span><i aria-hidden="true">↗</i></a>
+        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-diff"><span class="package-no">06</span><strong>diff</strong><span>Browser-native code review</span><i aria-hidden="true">↗</i></a>
+        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-cicd-status"><span class="package-no">07</span><strong>cicd status</strong><span>GitHub pipeline inspection</span><i aria-hidden="true">↗</i></a>
+        <a href="https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-mermaid"><span class="package-no">08</span><strong>mermaid</strong><span>Diagrams inside the terminal</span><i aria-hidden="true">↗</i></a>
       </div>
     </section>
 
     <section class="install" aria-labelledby="install-title">
-      <p class="section-index">07 / Start small</p>
+      <p class="section-index">06 / Start small</p>
       <h2 id="install-title" class="reveal">Add only<br>what the work<br><span>requires.</span></h2>
       <div class="install-bottom">
         <div class="command" role="group" aria-label="Installation command">
