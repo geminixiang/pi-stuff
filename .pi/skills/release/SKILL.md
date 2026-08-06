@@ -18,6 +18,7 @@ Release one workspace at a time from `geminixiang/pi-stuff`.
   - `pi-cicd-status` → `@geminixiang/pi-cicd-status`
   - `pi-diff` → `@geminixiang/pi-diff`
   - `pi-mermaid` → `@geminixiang/pi-mermaid`
+  - `pi-agent-team` → `@geminixiang/pi-agent-team`
 - Git tag and GitHub release title: `<package>@<version>`, for example `pi-mermaid@0.1.2`.
 - Publishing is performed by `.github/workflows/publish.yml` after the GitHub release is published. Do not run `npm publish` locally.
 - Versions containing a prerelease suffix such as `-alpha.`, `-beta.`, or `-rc.` are GitHub prereleases and are published with npm tag `beta`.
