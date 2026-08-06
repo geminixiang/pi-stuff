@@ -179,7 +179,8 @@ test("restricted group messages reach only members and wake each recipient once"
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
-      // Creating a group requires holding a claim on its channelId first.
+      // The claim-then-create path still works: a claim the creator already
+      // holds is honored rather than re-arbitrated.
       if (this.member.id === "a" && turn.turn === 1) return [{ type: "claim", resource: "wolves" }];
       if (this.member.id === "a" && turn.turn === 2)
         return [
@@ -217,6 +218,96 @@ test("restricted group messages reach only members and wake each recipient once"
     seen
       .get("c")
       ?.some((turn) => turn.observations.some((message) => message.body === "secret plan")),
+    false,
+  );
+});
+
+test("creating a group atomically claims an unclaimed channelId in one turn", async () => {
+  // No separate claim turn: create-group on an unclaimed id claims it and
+  // creates the room in the same turn. The old two-turn protocol left a
+  // window in which members needing the room were awake with no private
+  // channel yet.
+  const seen = new Map<string, TeamTurn[]>();
+  class AtomicGroupAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (this.member.id === "a" && turn.turn === 1)
+        return [
+          { type: "create-group", channelId: "wolves", name: "Wolves", members: ["b"] },
+          { type: "group-send", channelId: "wolves", body: "secret plan" },
+          { type: "finish", summary: "sent" },
+        ];
+      if (this.member.id === "b" && turn.observations.some((m) => m.body === "secret plan"))
+        return [{ type: "finish", summary: "received" }];
+      if (this.member.id === "b") return [{ type: "wait" }];
+      return [{ type: "finish", summary: "outsider" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+    { id: "c", name: "C" },
+  ];
+  const agents = members.map((member) => new AtomicGroupAgent(member));
+  const result = await new TeamRuntime(
+    "atomic-group",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "public" }, body: "start" });
+  assert.equal(result.settlement.kind, "completed");
+  // The implicit claim is recorded like an explicit one, so it shows in
+  // held-claims digests and releases on finish.
+  const claimed = result.events.filter((event) => event.type === "member.claimed");
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].memberId, "a");
+  assert.deepEqual(claimed[0].data, { resource: "wolves" });
+  // Only the group-send is restricted; the implicit claim posts no
+  // CLAIM_ACQUIRED round-trip — that round-trip was the exposure window.
+  assert.equal(result.restrictedMessages.length, 1);
+  assert.equal(JSON.stringify(result).includes("secret plan"), false);
+  assert.equal(
+    seen.get("c")?.some((turn) => turn.observations.some((m) => m.body === "secret plan")),
+    false,
+  );
+});
+
+test("creating a group whose id another member claims is rejected like a lost claim race", async () => {
+  const seen = new Map<string, TeamTurn[]>();
+  class RaceAgent {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
+      if (this.member.id === "a" && turn.turn === 1) return [{ type: "claim", resource: "wolves" }];
+      // a keeps holding the claim (finishing would release it and let b's
+      // create win the id legitimately).
+      if (this.member.id === "a")
+        return [{ type: "say", body: "claimed it", to: ["b"] }, { type: "wait" }];
+      if (this.member.id === "b" && turn.observations.some((m) => m.body === "claimed it"))
+        return [{ type: "create-group", channelId: "wolves", name: "Wolves", members: ["a"] }];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const members = [
+    { id: "a", name: "A" },
+    { id: "b", name: "B" },
+  ];
+  const agents = members.map((member) => new RaceAgent(member));
+  const result = await new TeamRuntime(
+    "group-race",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  // b's create bounces with a COMMAND_FAILED naming the holder; no group
+  // ever exists.
+  const bounce = seen
+    .get("b")!
+    .flatMap((turn) => turn.observations)
+    .find((m) => m.body?.startsWith("COMMAND_FAILED type=create-group"));
+  assert.ok(bounce, "b is woken with a COMMAND_FAILED for the rejected create");
+  assert.match(bounce!.body ?? "", /claimed by a/);
+  assert.equal(
+    result.events.some((event) => event.type === "channel.created"),
     false,
   );
 });

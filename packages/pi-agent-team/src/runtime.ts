@@ -1038,9 +1038,23 @@ export class TeamRuntime {
     requestedMembers: readonly MemberId[],
   ): void {
     if (this.groups.has(channelId)) throw new Error(`Group already exists: ${channelId}`);
-    if (this.claims.get(channelId) !== creator)
-      throw new Error(`must claim ${channelId} before creating a group with that id`);
+    const holder = this.claims.get(channelId);
+    if (holder !== undefined && holder !== creator)
+      throw new Error(`cannot create group ${channelId}: its id is claimed by ${holder}`);
     const resolvedMembers = requestedMembers.map((candidate) => this.resolveMemberId(candidate));
+    // Creation is its own arbitration point: an unclaimed id is claimed
+    // atomically with the create, so a private room takes one turn instead of
+    // a claim round-trip followed by a create. The gap between those two
+    // turns is real exposure — members who need the room are awake and
+    // improvising while it doesn't exist yet. Colliding creators arbitrate
+    // exactly as claims do: the first create wins, the loser is rejected
+    // above. The claim is set only after member resolution so a bad member
+    // name leaves no state behind.
+    if (holder === undefined) {
+      this.claims.set(channelId, creator);
+      if (channelId === REPORTER_RESOURCE) this.claimedReporter = creator;
+      this.record("member.claimed", creator, undefined, { resource: channelId });
+    }
     const members = Object.freeze([...new Set([creator, ...resolvedMembers])]);
     const group = Object.freeze({ kind: "group" as const, id: channelId, name, members });
     this.groups.set(channelId, group);
