@@ -268,6 +268,7 @@ export function selectChatIndices(activities: readonly TeamActivity[]): number[]
 function memberStateVisual(state: TeamMemberState, theme: Theme): string {
   if (state === "finished") return theme.fg("success", "✓");
   if (state === "errored") return theme.fg("error", "✗");
+  if (state === "blocked") return theme.fg("warning", "⏸");
   if (state === "running") return theme.fg("warning", "◉");
   if (state === "ready") return theme.fg("accent", "→");
   if (state === "waiting") return theme.fg("muted", "…");

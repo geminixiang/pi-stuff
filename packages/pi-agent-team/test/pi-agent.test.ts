@@ -16,6 +16,7 @@ function baseTurn(digest: Partial<TeamTurn["digest"]> = {}): TeamTurn {
     observations: [],
     digest: {
       states: { a: "running", b: "waiting" },
+      blockedReasons: {},
       claims: {},
       groups: [],
       polls: [],
@@ -41,6 +42,17 @@ test("formatTurn surfaces live poll tally and missing voters directly in the pro
     }),
   );
   assert.match(text, /OPEN POLLS: guesser tally=\{"a":2,"b":1\} missing=\["c"\]/);
+});
+
+test("formatTurn surfaces a blocked member's state and reason in the digest", () => {
+  const text = formatTurn(
+    baseTurn({
+      states: { a: "blocked", b: "waiting" },
+      blockedReasons: { a: "needs approval" },
+    }),
+  );
+  assert.match(text, /TEAM STATE: a=blocked, b=waiting/);
+  assert.match(text, /BLOCKED: a="needs approval"/);
 });
 
 interface FakeSession {
@@ -160,4 +172,15 @@ test("the self-abort raised by a turn-ending command is still swallowed and the 
     { type: "say", body: "done, wrapping up" },
     { type: "finish", summary: "all done" },
   ]);
+});
+
+test("team_block ends the turn like wait/finish: the queued command survives the self-abort", async () => {
+  const agent = agentWithSession(async (internals) => {
+    internals.turnState.apply({ type: "block", reason: "need requester input" }, "blocked");
+    // queueCommand aborts the session on a turn-ending command; the prompt
+    // then rejects with the abort. That is the one expected failure.
+    throw new Error("aborted by turn-ending command");
+  });
+  const commands = await agent.act(baseTurn(), new AbortController().signal);
+  assert.deepEqual(commands, [{ type: "block", reason: "need requester input" }]);
 });

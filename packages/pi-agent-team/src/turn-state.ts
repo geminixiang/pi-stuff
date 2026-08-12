@@ -1,12 +1,17 @@
 import type { TeamCommand } from "./domain.js";
 
 /**
- * wait, finish, and claim mean "nothing more to do this turn" (invariant
- * 16 in CONTEXT.md); a model that keeps calling tools after one of them
- * just burns turn latency and risks the per-agent timeout.
+ * wait, finish, block, and claim mean "nothing more to do this turn"
+ * (invariant 16 in CONTEXT.md); a model that keeps calling tools after one
+ * of them just burns turn latency and risks the per-agent timeout.
  */
 export function endsTurn(command: TeamCommand): boolean {
-  return command.type === "wait" || command.type === "finish" || command.type === "claim";
+  return (
+    command.type === "wait" ||
+    command.type === "finish" ||
+    command.type === "block" ||
+    command.type === "claim"
+  );
 }
 
 export interface TurnApplyResult {
@@ -19,7 +24,7 @@ export interface TurnApplyResult {
 const CLAIM_FENCE_TEXT =
   "blocked by pending claim: stop and wait for CLAIM_ACQUIRED or CLAIM_REJECTED";
 const TURN_ENDED_TEXT =
-  "turn already ended by a prior wait/finish/claim this response; stop calling tools";
+  "turn already ended by a prior wait/finish/block/claim this response; stop calling tools";
 const CLAIM_SOLE_ACTION_TEXT =
   "claim rejected locally: team_claim must be the only action in this response";
 

@@ -4,7 +4,7 @@ import type { TeamActivity, TeamMemberState } from "./domain.js";
 import { accentWrap } from "./member-colors.js";
 import type { TeamDisplayDetails } from "./team-chat-view.js";
 
-type Role = "speaking" | "addressed" | "finished" | "errored" | "idle";
+type Role = "speaking" | "ready" | "addressed" | "finished" | "errored" | "blocked" | "idle";
 
 /**
  * The most recent directed message worth glowing over. CLAIM_REJECTED
@@ -78,8 +78,10 @@ function classifyRoles(details: TeamDisplayDetails): Map<string, Role> {
   for (const member of details.members) {
     const state = states[member.id] ?? "idle";
     if (state === "running") roles.set(member.id, "speaking");
+    else if (state === "ready") roles.set(member.id, "ready");
     else if (state === "finished") roles.set(member.id, "finished");
     else if (state === "errored") roles.set(member.id, "errored");
+    else if (state === "blocked") roles.set(member.id, "blocked");
     else roles.set(member.id, "idle");
   }
   if (directed) {
@@ -89,11 +91,24 @@ function classifyRoles(details: TeamDisplayDetails): Map<string, Role> {
   return roles;
 }
 
+function attentionPriority(role: Role): number {
+  if (role === "blocked") return 6;
+  if (role === "errored") return 5;
+  if (role === "ready" || role === "addressed") return 4;
+  if (role === "speaking") return 3;
+  if (role === "idle") return 2;
+  return 1;
+}
+
 function chip(member: { id: string; name: string }, role: Role, theme: Theme): string {
   if (role === "speaking") return accentWrap(member.id, theme.bold(`◉ ${member.name}`));
+  if (role === "ready") return accentWrap(member.id, `→ ${member.name}`);
   if (role === "addressed") return accentWrap(member.id, `○ ${member.name}`);
   if (role === "finished") return theme.fg("dim", `✓ ${member.name}`);
   if (role === "errored") return theme.fg("error", `✗ ${member.name}`);
+  // A blocked member is paused, not broken: distinct from errored (terminal)
+  // and finished (done), it reads as "waiting for external intervention".
+  if (role === "blocked") return theme.fg("warning", `⏸ ${member.name}`);
   return theme.fg("dim", `· ${member.name}`);
 }
 
@@ -113,14 +128,20 @@ export class TeamRosterWidget implements Component {
     const { details, theme } = this;
     if (!details.members.length) return [];
     const roles = classifyRoles(details);
-    const rosterLine = details.members
+    const rosterLine = [...details.members]
+      .sort(
+        (left, right) =>
+          attentionPriority(roles.get(right.id) ?? "idle") -
+          attentionPriority(roles.get(left.id) ?? "idle"),
+      )
       .map((member) => chip(member, roles.get(member.id) ?? "idle", theme))
       .join("   ");
     const turns = details.progress?.turns ?? 0;
     const finished = details.progress?.finished.length ?? 0;
+    const blocked = details.progress?.blocked.length ?? 0;
     const header = theme.fg(
       "muted",
-      `agent team · ${finished}/${details.members.length} finished · ${turns} turns`,
+      `agent team · ${finished}/${details.members.length} finished${blocked ? ` · ${blocked} blocked` : ""} · ${turns} turns`,
     );
     const bubble = renderBubble(lastMemberMessage(details), theme, Math.max(1, width));
     return [header, ...bubble, ...wrapTextWithAnsi(rosterLine, Math.max(1, width))];

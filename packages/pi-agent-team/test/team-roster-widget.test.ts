@@ -23,6 +23,10 @@ function progress(states: Record<string, TeamProgress["states"][string]>): TeamP
     finished: Object.entries(states)
       .filter(([, state]) => state === "finished")
       .map(([id]) => id),
+    blocked: Object.entries(states)
+      .filter(([, state]) => state === "blocked")
+      .map(([id]) => id),
+    blockedReasons: {},
     states,
     queuedMessages: 0,
     turns: 3,
@@ -206,4 +210,50 @@ test("finished and errored members render with their own glyphs regardless of pa
   const rendered = widget.render(80).join("\n");
   assert.ok(rendered.includes("✓ Bob"));
   assert.ok(rendered.includes("✗ Cara"));
+});
+
+test("blocked members render a pause glyph and a header count, distinct from errored", () => {
+  const widget = new TeamRosterWidget(fakeTheme);
+  widget.update(
+    {
+      members,
+      activities: [],
+      progress: progress({ a: "blocked", b: "errored", c: "waiting", d: "waiting" }),
+    },
+    fakeTheme,
+  );
+  const rendered = widget.render(80).join("\n");
+  assert.ok(rendered.includes("⏸ Alice"), "blocked member gets the pause glyph");
+  assert.ok(rendered.includes("✗ Bob"), "an errored member keeps the error glyph, not the pause one");
+  assert.ok(rendered.includes("1 blocked"), "header counts blocked members");
+});
+
+test("the roster sorts members needing attention ahead of ordinary workers", () => {
+  const widget = new TeamRosterWidget(fakeTheme);
+  widget.update(
+    {
+      members,
+      activities: [],
+      progress: progress({ a: "ready", b: "running", c: "errored", d: "blocked" }),
+    },
+    fakeTheme,
+  );
+  const roster = widget.render(120).at(-1)!;
+  assert.ok(roster.indexOf("⏸ Dee") < roster.indexOf("✗ Cara"));
+  assert.ok(roster.indexOf("✗ Cara") < roster.indexOf("→ Alice"));
+  assert.ok(roster.indexOf("→ Alice") < roster.indexOf("◉ Bob"));
+});
+
+test("a blocked member is never relabeled addressed by a later directed message", () => {
+  const widget = new TeamRosterWidget(fakeTheme);
+  widget.update(
+    {
+      members,
+      activities: [directedMessage("c", "a")],
+      progress: progress({ a: "blocked", b: "waiting", c: "waiting", d: "waiting" }),
+    },
+    fakeTheme,
+  );
+  const rendered = widget.render(80).join("\n");
+  assert.ok(rendered.includes("⏸ Alice"), "blocked wins over the addressed glow — they are paused, not about to speak");
 });

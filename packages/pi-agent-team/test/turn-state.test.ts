@@ -3,10 +3,11 @@ import test from "node:test";
 import type { TeamCommand } from "../src/domain.js";
 import { endsTurn, TurnState } from "../src/turn-state.js";
 
-test("wait, finish, and claim end the turn; say/dm/handoff/release/group ops do not", () => {
+test("wait, finish, block, and claim end the turn; say/dm/handoff/release/group ops do not", () => {
   const terminal: TeamCommand[] = [
     { type: "wait" },
     { type: "finish", summary: "done" },
+    { type: "block", reason: "need external input" },
     { type: "claim", resource: "r" },
   ];
   const nonTerminal: TeamCommand[] = [
@@ -41,6 +42,29 @@ test("say followed by finish is a valid combo: both queue, only finish ends the 
     { type: "say", body: "hi" },
     { type: "finish", summary: "done" },
   ]);
+});
+
+test("say followed by block is a valid combo: both queue, only block ends the turn", () => {
+  const state = new TurnState();
+  const first = state.apply({ type: "say", body: "handing off to requester" }, "spoken publicly");
+  const second = state.apply({ type: "block", reason: "need budget approval" }, "blocked");
+  assert.equal(first.endsTurn, false);
+  assert.equal(second.endsTurn, true);
+  assert.deepEqual(state.queued, [
+    { type: "say", body: "handing off to requester" },
+    { type: "block", reason: "need budget approval" },
+  ]);
+  const after = state.apply({ type: "wait" }, "waiting");
+  assert.equal(after.endsTurn, false);
+  assert.match(after.text, /turn already ended/);
+  assert.deepEqual(
+    state.queued,
+    [
+      { type: "say", body: "handing off to requester" },
+      { type: "block", reason: "need budget approval" },
+    ],
+    "the rejected command after block is never queued",
+  );
 });
 
 test("wait ends the turn and further commands are rejected as turn-ended", () => {

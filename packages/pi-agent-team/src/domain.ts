@@ -62,6 +62,7 @@ export interface MessageEnvelope {
  */
 export interface TeamDigest {
   states: Readonly<Record<MemberId, TeamMemberState>>;
+  blockedReasons: Readonly<Record<MemberId, string>>;
   claims: Readonly<Record<string, MemberId>>;
   groups: readonly { id: ChannelId; name: string; members: readonly MemberId[] }[];
   polls: readonly {
@@ -93,7 +94,8 @@ export type TeamCommand =
   | { type: "vote-close"; pollId: string }
   | { type: "handoff"; to: MemberId; body: string }
   | { type: "finish"; summary: string }
-  | { type: "wait" };
+  | { type: "wait" }
+  | { type: "block"; reason: string };
 
 /**
  * How a poll resolved: a clear winner, an honest tie (the runtime never
@@ -179,6 +181,8 @@ export interface AuditEvent {
     | "poll.closed"
     | "member.finished"
     | "member.errored"
+    | "member.blocked"
+    | "member.intervened"
     | "report.requested"
     | "report.submitted"
     | "report.failed"
@@ -197,12 +201,21 @@ export interface AuditEvent {
   hash: string;
 }
 
-export type TeamMemberState = "idle" | "ready" | "running" | "waiting" | "finished" | "errored";
+export type TeamMemberState =
+  | "idle"
+  | "ready"
+  | "running"
+  | "waiting"
+  | "finished"
+  | "errored"
+  | "blocked";
 
 export interface TeamProgress {
   teamId: string;
   active: readonly MemberId[];
   finished: readonly MemberId[];
+  blocked: readonly MemberId[];
+  blockedReasons: Readonly<Record<MemberId, string>>;
   states: Readonly<Record<MemberId, TeamMemberState>>;
   queuedMessages: number;
   turns: number;
@@ -212,7 +225,17 @@ export interface TeamProgress {
 export interface TeamActivity {
   sequence: number;
   memberId: PrincipalId;
-  kind: "message" | "wake" | "claim" | "vote" | "finish" | "wait" | "channel" | "error" | "report";
+  kind:
+    | "message"
+    | "wake"
+    | "claim"
+    | "vote"
+    | "finish"
+    | "wait"
+    | "block"
+    | "channel"
+    | "error"
+    | "report";
   text: string;
   visibility: "public" | "restricted";
   channel: ChannelTarget;
@@ -226,6 +249,7 @@ export type TeamSettlement =
   | { kind: "completed"; meaning: "all-members-finished" }
   | { kind: "quiescent"; meaning: "no-runnable-members" }
   | { kind: "quiescent"; meaning: "errored-members-remain" }
+  | { kind: "quiescent"; meaning: "blocked-members-remain" }
   | { kind: "exhausted"; meaning: "max-turns-reached" };
 
 export interface TeamResult {
@@ -250,6 +274,8 @@ export interface TeamResult {
     state: TeamMemberState;
     summary?: string;
     error?: string;
+    /** The reason saved by team_block, present only while the member is currently blocked. */
+    blockedReason?: string;
     reflection: ReflectionOutcome;
   }[];
   publicTranscript: readonly {
@@ -267,6 +293,6 @@ export interface TeamResult {
     bodyHash: string;
   }[];
   events: readonly AuditEvent[];
-  userInterventions: 0;
+  userInterventions: number;
   auditHead: string;
 }

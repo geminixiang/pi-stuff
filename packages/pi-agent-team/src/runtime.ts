@@ -45,6 +45,16 @@ export interface TeamRuntimeOptions {
    */
   reactionDelayMs?: { min: number; max: number };
   /**
+   * When every runnable member is done and blocked members remain, keep
+   * run() alive — parked quiescently, no polling or busy loop — awaiting an
+   * external intervene() call instead of settling immediately. Default
+   * false: a blocked team settles quiescent ("blocked-members-remain") and
+   * the caller decides how to act on the honest result. Integrators that
+   * run the team in the background and want to unblock members mid-run opt
+   * in explicitly.
+   */
+  waitForIntervention?: boolean;
+  /**
    * Pre-designates the member who must deliver the final report. Omit to
    * let the team decide during play by claiming `REPORTER_RESOURCE`; when
    * set, this designation wins over any claim.
@@ -60,7 +70,7 @@ export interface TeamRuntimeOptions {
   onActivity?: (activity: TeamActivity) => void;
 }
 
-type InitialPost =
+export type TeamInitialPost =
   | { channel: { kind: "public" }; body: string }
   | { channel: { kind: "direct"; memberId: MemberId }; body: string };
 
@@ -73,6 +83,13 @@ export class TeamRuntime {
   private readonly events: AuditEvent[] = [];
   private readonly finished = new Map<MemberId, string>();
   private readonly errored = new Map<MemberId, string>();
+  /**
+   * Members paused via team_block, keyed by their saved reason. Blocked is
+   * a non-terminal pause: the member is excluded from scheduling until an
+   * external intervene() call returns it to ready, but it still receives
+   * mail passively (nothing sent while it paused is lost or bounced).
+   */
+  private readonly blocked = new Map<MemberId, string>();
   private readonly turns = new Map<MemberId, number>();
   private readonly ready = new Set<MemberId>();
   private readonly flushing = new Set<MemberId>();
@@ -112,6 +129,20 @@ export class TeamRuntime {
   private auditHead = "0".repeat(64);
   private recent = "Team created";
   private started = false;
+  private userInterventions = 0;
+  /**
+   * Resolver for the single pending quiescent intervention wait, if the
+   * execute loop is currently parked in awaitIntervention(). intervene()
+   * fires it so the loop re-checks; the wait and a ready member are
+   * mutually exclusive, so a single slot can never miss a wake.
+   */
+  private resolveIntervention?: () => void;
+  /**
+   * Set once the coordination loop has exited. intervene() refuses after
+   * this: agent sessions are about to be closed, so a message posted into
+   * a settled runtime could never be delivered.
+   */
+  private settled = false;
   /**
    * The member currently volunteered as reporter via the REPORTER_RESOURCE
    * claim. Kept when the claim auto-releases on finish (finishing your work
@@ -150,7 +181,7 @@ export class TeamRuntime {
    * a new TeamRuntime for another run instead.
    */
   async run(
-    initial: InitialPost | readonly InitialPost[],
+    initial: TeamInitialPost | readonly TeamInitialPost[],
     signal?: AbortSignal,
   ): Promise<TeamResult> {
     if (this.started)
@@ -161,6 +192,9 @@ export class TeamRuntime {
     try {
       return await this.execute(initial, signal);
     } finally {
+      // Also close the intervention channel on abort/error paths that exit
+      // before execute() reaches ordinary settlement.
+      this.settled = true;
       await Promise.allSettled([...this.agents.values()].map((agent) => agent.close?.()));
     }
   }
@@ -170,6 +204,8 @@ export class TeamRuntime {
       teamId: this.teamId,
       active: Object.freeze([...this.ready]),
       finished: Object.freeze([...this.finished.keys()]),
+      blocked: Object.freeze([...this.blocked.keys()]),
+      blockedReasons: Object.freeze(Object.fromEntries(this.blocked)),
       states: Object.freeze(Object.fromEntries(this.states)),
       queuedMessages: [...this.observations.values()].reduce((sum, queue) => sum + queue.length, 0),
       turns: this.totalTurns(),
@@ -177,8 +213,68 @@ export class TeamRuntime {
     });
   }
 
+  /**
+   * External intervention channel for integrators running the team in the
+   * background: posts a direct interrupt carrying the given guidance and
+   * wakes the member, unblocking it if it was blocked — the recover-to-ready
+   * path team_block exists for. Works on any non-terminal member (nudging a
+   * working member is harmless: it receives the message next wake), but
+   * refuses unknown, terminal, or already-settled targets explicitly rather
+   * than silently posting into a dead runtime. This is requester-originated
+   * input, so it is posted as "user" and counted honestly in the result.
+   */
+  intervene(memberId: MemberId, message: string): void {
+    if (!this.started)
+      throw new Error("TeamRuntime.intervene() may only be called while run() is executing");
+    if (this.settled)
+      throw new Error(
+        "team has already settled; agent sessions are closed — construct a new TeamRuntime for another run",
+      );
+    if (!this.agents.has(memberId)) throw new Error(`Unknown member: ${memberId}`);
+    if (this.finished.has(memberId) || this.errored.has(memberId))
+      throw new Error(
+        `member ${memberId} is terminal (${this.states.get(memberId)}) and cannot be intervened`,
+      );
+    if (!message.trim()) throw new Error("intervention message must not be empty");
+    const wasBlocked = this.blocked.delete(memberId);
+    this.userInterventions += 1;
+    this.record("member.intervened", memberId, undefined, { unblocked: wasBlocked });
+    // Delivering the interrupt re-adds the member to `ready` (it is no
+    // longer blocked at this point), so a loop parked in awaitIntervention
+    // must be kicked to re-check; if it was busy running other waves the
+    // ready member is picked up by the normal scheduling pass.
+    this.post("user", { kind: "direct", memberId }, message, "interrupt", "message");
+    this.resolveIntervention?.();
+  }
+
+  /**
+   * Parks the execute loop quiescently (no polling, no busy loop) until
+   * intervene() resolves it or the parent signal aborts. Only one wait can
+   * be pending at a time: the loop is single-threaded and awaits this before
+   * anything else can happen, and a ready member and a registered waiter are
+   * mutually exclusive, so the single resolver slot can never miss a wake.
+   */
+  private async awaitIntervention(signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
+        if (this.resolveIntervention === onIntervene) this.resolveIntervention = undefined;
+      };
+      const onIntervene = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason ?? new Error("aborted"));
+      };
+      this.resolveIntervention = onIntervene;
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   private async execute(
-    initial: InitialPost | readonly InitialPost[],
+    initial: TeamInitialPost | readonly TeamInitialPost[],
     signal?: AbortSignal,
   ): Promise<TeamResult> {
     this.record("team.started", undefined, undefined, {
@@ -197,7 +293,34 @@ export class TeamRuntime {
     const waveConcurrency = Math.max(1, this.options.waveConcurrency ?? 8);
     let exhausted = false;
     while (!signal?.aborted) {
-      if (!this.ready.size && !this.promoteStarvedMembers()) break;
+      if (!this.ready.size && !this.promoteStarvedMembers()) {
+        // Blocked members pause the team quiescently rather than settling:
+        // nothing is runnable, no mail is waiting, and the only way forward
+        // is external intervention. With waitForIntervention opted in, the
+        // loop parks here (no polling, no busy loop) until intervene() or
+        // abort; otherwise it settles and the honest "blocked-members-remain"
+        // result tells the caller exactly what happened. The turn budget
+        // still caps the wait: a team that keeps blocking past maxTurns is
+        // reported exhausted like any other budget overrun.
+        if (
+          this.blocked.size > 0 &&
+          this.options.waitForIntervention &&
+          maxTurns - this.totalTurns() > 0
+        ) {
+          this.emitActivity(
+            "runtime",
+            "wait",
+            `team quiescent — waiting for external intervention on blocked: ${[...this.blocked.keys()].join(", ")}`,
+            { kind: "public" },
+            [...this.agents.keys()],
+          );
+          this.recent = "waiting for external intervention";
+          await this.awaitIntervention(signal);
+          this.safeObserve("onProgress", () => this.options.onProgress?.(this.progress()));
+          continue;
+        }
+        break;
+      }
       const remaining = maxTurns - this.totalTurns();
       if (remaining <= 0) {
         exhausted = true;
@@ -249,6 +372,7 @@ export class TeamRuntime {
       this.safeObserve("onProgress", () => this.options.onProgress?.(this.progress()));
     }
     if (signal?.aborted) throw signal.reason;
+    this.settled = true;
 
     const settlement =
       this.finished.size === this.agents.size
@@ -259,7 +383,13 @@ export class TeamRuntime {
             ? // Every non-finished member is terminally errored: this state can
               // never change, unlike a genuine stuck quiescence.
               ({ kind: "quiescent", meaning: "errored-members-remain" } as const)
-            : ({ kind: "quiescent", meaning: "no-runnable-members" } as const);
+            : this.blocked.size ===
+                this.agents.size - this.finished.size - this.errored.size
+              ? // Every remaining non-terminal member deliberately blocked,
+                // paused for external intervention — a stable, honest state,
+                // distinct from a team that got stuck without choosing to.
+                ({ kind: "quiescent", meaning: "blocked-members-remain" } as const)
+              : ({ kind: "quiescent", meaning: "no-runnable-members" } as const);
     this.record(
       settlement.kind === "completed"
         ? "team.completed"
@@ -268,7 +398,11 @@ export class TeamRuntime {
           : "team.quiescent",
       undefined,
       undefined,
-      { finished: this.finished.size, errored: this.errored.size },
+      {
+        finished: this.finished.size,
+        errored: this.errored.size,
+        blocked: this.blocked.size,
+      },
     );
     const { report, reportError } = await this.collectReport(settlement, signal);
     const reflections = await this.collectReflections(
@@ -293,6 +427,7 @@ export class TeamRuntime {
             state: this.states.get(agent.member.id) ?? "idle",
             summary: this.finished.get(agent.member.id),
             error: this.errored.get(agent.member.id),
+            blockedReason: this.blocked.get(agent.member.id),
             reflection: reflections.get(agent.member.id)!,
           }),
         ),
@@ -322,7 +457,7 @@ export class TeamRuntime {
           ),
       ),
       events: Object.freeze([...this.events]),
-      userInterventions: 0 as const,
+      userInterventions: this.userInterventions,
       auditHead: this.auditHead,
     });
   }
@@ -465,7 +600,27 @@ export class TeamRuntime {
     return promoted;
   }
 
+  /**
+   * Schedulable now: not terminal and not blocked. Blocked members pause
+   * out of the scheduling loop entirely — no spontaneous wake, no flush —
+   * and only an external intervene() returns them to runnable.
+   */
   private runnable(memberId: MemberId): boolean {
+    return (
+      !this.finished.has(memberId) &&
+      !this.errored.has(memberId) &&
+      !this.blocked.has(memberId)
+    );
+  }
+
+  /**
+   * Can still receive mail: not terminal. A blocked member is not runnable
+   * but remains deliverable — messages directed at it are enqueued passively
+   * (never waking it) and delivered together with the eventual intervention,
+   * so nothing said while it paused is lost or bounced. Poll eligibility
+   * follows this too: blocking is a pause, not a departure.
+   */
+  private deliverable(memberId: MemberId): boolean {
     return !this.finished.has(memberId) && !this.errored.has(memberId);
   }
 
@@ -505,13 +660,18 @@ export class TeamRuntime {
    */
   private revealOpeningWaveDrafts(): void {
     for (const [memberId, envelopes] of this.heldBackForReveal) {
-      if (!envelopes.length || !this.runnable(memberId)) continue;
+      if (!envelopes.length || !this.deliverable(memberId)) continue;
       const queue = this.observations.get(memberId)!;
       queue.push(...envelopes);
       queue.sort((left, right) => left.sequence - right.sequence);
-      this.ready.add(memberId);
-      this.states.set(memberId, "ready");
-      this.readyCause.set(memberId, OPENING_WAVE_REVEAL_CAUSE);
+      // A blocked member retains the reveal in its mailbox but must not wake
+      // until requester intervention. Without this split, clearing the
+      // held-back map silently discarded opening speech for blocked members.
+      if (this.runnable(memberId)) {
+        this.ready.add(memberId);
+        this.states.set(memberId, "ready");
+        this.readyCause.set(memberId, OPENING_WAVE_REVEAL_CAUSE);
+      }
     }
     this.heldBackForReveal.clear();
   }
@@ -626,14 +786,17 @@ export class TeamRuntime {
             [memberId],
           );
       } else {
-        // Invariant 16 (turn-ending protocol): once wait/finish appears in
-        // the batch, nothing after it applies. PiTeamAgent's TurnState
+        // Invariant 16 (turn-ending protocol): once wait/block/finish appears
+        // in the batch, nothing after it applies. PiTeamAgent's TurnState
         // already enforces this on the way in, so a well-behaved adapter's
         // array is already correctly truncated here — but TeamAgent is a
         // public interface, and this is the one place the invariant holds
         // for *any* implementation, not only PiTeamAgent's.
         const terminalIndex = commands.findIndex(
-          (command) => command.type === "wait" || command.type === "finish",
+          (command) =>
+            command.type === "wait" ||
+            command.type === "finish" ||
+            command.type === "block",
         );
         const effective = terminalIndex === -1 ? commands : commands.slice(0, terminalIndex + 1);
         const budget = Math.max(1, this.options.maxCommandsPerTurn ?? 16);
@@ -671,7 +834,7 @@ export class TeamRuntime {
           this.emitActivity(
             memberId,
             "wait",
-            `turn already ended by wait/finish; discarded ${discardedAfterTurnEnd} action${discardedAfterTurnEnd === 1 ? "" : "s"} queued after it`,
+            `turn already ended by wait/block/finish; discarded ${discardedAfterTurnEnd} action${discardedAfterTurnEnd === 1 ? "" : "s"} queued after it`,
             { kind: "direct", memberId },
             [memberId],
           );
@@ -728,6 +891,32 @@ export class TeamRuntime {
   private executeCommand(from: MemberId, command: TeamCommand): void {
     if (command.type === "wait") {
       this.emitActivity(from, "wait", "WAIT", { kind: "direct", memberId: from }, [from]);
+      return;
+    }
+    if (command.type === "block") {
+      // Empty reason is a caller bug, not a block: bounce it like any other
+      // invalid command so the member wakes to replan with the error.
+      if (!command.reason.trim())
+        throw new Error("block reason must not be empty or whitespace-only");
+      this.blocked.set(from, command.reason);
+      this.states.set(from, "blocked");
+      // Invariant 11: audit carries only the reason hash, never the reason
+      // plaintext (a blocked reason may be as sensitive as a message body).
+      this.record("member.blocked", from, undefined, { reasonHash: sha256(command.reason) });
+      this.emitActivity(
+        from,
+        "block",
+        `blocked: ${command.reason}`,
+        { kind: "direct", memberId: from },
+        [from],
+      );
+      this.post(
+        "runtime",
+        { kind: "public" },
+        `MEMBER_BLOCKED member=${from} reason=${JSON.stringify(command.reason)}. This member paused and is awaiting external intervention; route around it until it resumes.`,
+        "passive",
+        "system",
+      );
       return;
     }
     if (command.type === "finish") {
@@ -1009,7 +1198,10 @@ export class TeamRuntime {
     const tally: Record<string, number> = {};
     for (const choice of votes.values()) tally[choice] = (tally[choice] ?? 0) + 1;
     const castIds = new Set(votes.keys());
-    const eligible = [...this.agents.keys()].filter((id) => castIds.has(id) || this.runnable(id));
+    // Blocked members stay in the electorate: blocking is a pause, not a
+    // departure, so the poll keeps waiting for them (and shows them missing)
+    // instead of silently shrinking around a member who will resume.
+    const eligible = [...this.agents.keys()].filter((id) => castIds.has(id) || this.deliverable(id));
     const missing = eligible.filter((id) => !castIds.has(id));
     const entries = Object.entries(tally);
     const outcome: PollOutcome = !entries.length
@@ -1108,11 +1300,15 @@ export class TeamRuntime {
     );
     this.emitActivity(from, "message", body, target, audience, body, envelope.mentions);
     for (const recipient of audience) {
-      if (recipient === from || !this.runnable(recipient)) continue;
+      if (recipient === from || !this.deliverable(recipient)) continue;
       // The wake policy is per-recipient: a channel-level interrupt reaches
       // its whole audience, while a passive public say still interrupts the
       // members it explicitly mentions — everyone else receives it passively.
-      const interrupts = wake === "interrupt" || envelope.mentions.includes(recipient);
+      // A blocked recipient never wakes from delivery: even an interrupt or
+      // mention is recorded passively and held for its intervention wake.
+      const interrupts =
+        !this.blocked.has(recipient) &&
+        (wake === "interrupt" || envelope.mentions.includes(recipient));
       // First-turn barrier: public passive speech (team_say) posted while
       // this recipient is still an undrafted opening-wave member is held
       // back from its regular mailbox and revealed only once every opening-
@@ -1156,6 +1352,7 @@ export class TeamRuntime {
   private digestFor(memberId: MemberId): TeamDigest {
     return Object.freeze({
       states: Object.freeze(Object.fromEntries(this.states)),
+      blockedReasons: Object.freeze(Object.fromEntries(this.blocked)),
       claims: Object.freeze(Object.fromEntries(this.claims)),
       groups: Object.freeze(
         [...this.groups.values()]

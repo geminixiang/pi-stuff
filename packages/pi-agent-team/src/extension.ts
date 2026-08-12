@@ -8,6 +8,7 @@ import {
   type TeamResult,
 } from "./domain.js";
 import { PiTeamAgent } from "./pi-agent.js";
+import { TeamRunManager, type TeamRunSnapshot } from "./run-manager.js";
 import { TeamRuntime } from "./runtime.js";
 import { TeamChatView, type TeamDisplayDetails } from "./team-chat-view.js";
 import { TeamRosterWidget } from "./team-roster-widget.js";
@@ -47,17 +48,21 @@ export function assertUniqueMemberRoster(members: readonly { id: string; name: s
 }
 
 export default function agentTeam(pi: ExtensionAPI): void {
+  const runs = new TeamRunManager();
+  pi.on("session_shutdown", () => runs.shutdown());
+  registerTeamControlTools(pi, runs);
+
   pi.registerTool({
     name: "team_start",
     label: "Start independent agent team",
     description:
-      "Create independent agent sessions with public, direct, and restricted group channels while showing every member's live activity. The runtime routes observations and wake signals but knows no task rules or expected answers.",
+      "Create independent agent sessions with public, direct, and restricted group channels. By default this waits and shows live activity; detached mode returns a runId for team_get/team_wait/team_prompt/team_cancel. The runtime knows no task rules or expected answers.",
     promptSnippet: "Start an independent mailbox-driven agent team",
     promptGuidelines: [
       "Give the team the user's objective and initial message without adding expected answers.",
       "For autonomous coordination, use opaque member IDs, omit startMemberId, and let all members start symmetrically.",
       "Never encode task order in member IDs, names, array order, objective, or initial message.",
-      "After starting, do not act for members or inject additional messages.",
+      "After starting, do not act for members or inject messages unless the requester asks or a detached member explicitly blocks for requester input.",
       "Do not guess a maxTurns value; the team runtime supplies a safe default.",
       'When the request implies a natural reporter (a judge, coordinator, or integrator), pass reporterId; otherwise state in the objective how the team should decide who claims the "reporter" resource.',
       "Use reportPrompt to pass the user's requirements for the final report (format, files, language) verbatim.",
@@ -87,6 +92,12 @@ export default function agentTeam(pi: ExtensionAPI): void {
               "Instructions for the final report turn (format, files, language, audience). Omit for a generic final-report request.",
           }),
         ),
+        detached: Type.Optional(
+          Type.Boolean({
+            description:
+              "Run in the background and return a runId immediately. Available in long-lived TUI/RPC sessions only.",
+          }),
+        ),
         initialMessage: Type.String(),
       },
       { additionalProperties: false },
@@ -96,6 +107,42 @@ export default function agentTeam(pi: ExtensionAPI): void {
       const reporterId = params.reporterId?.trim() || undefined;
       if (reporterId && !params.members.some((member) => member.id === reporterId))
         throw new Error(`Unknown reporterId: ${reporterId}`);
+      const startMemberId = params.startMemberId?.trim() || "all";
+      if (
+        startMemberId !== "all" &&
+        !params.members.some((member) => member.id === startMemberId)
+      )
+        throw new Error(`Unknown startMemberId: ${startMemberId}`);
+      const initial =
+        startMemberId === "all"
+          ? ({ channel: { kind: "public" as const }, body: params.initialMessage } as const)
+          : ({
+              channel: { kind: "direct" as const, memberId: startMemberId },
+              body: params.initialMessage,
+            } as const);
+
+      if (params.detached) {
+        if (ctx.mode !== "tui" && ctx.mode !== "rpc")
+          throw new Error("detached teams require a long-lived TUI or RPC session");
+        const agents = new Map(
+          params.members.map((member) => [member.id, new PiTeamAgent(member, ctx.cwd, ctx)]),
+        );
+        let runtime!: TeamRuntime;
+        runtime = new TeamRuntime(params.objective, agents, {
+          reactionDelayMs: { min: 50, max: 500 },
+          waitForIntervention: true,
+          reporterId,
+          reportPrompt: params.reportPrompt,
+          onActivity: (activity) => runs.observeActivity(runtime.teamId, activity),
+          onProgress: (progress) => runs.observeProgress(runtime.teamId, progress),
+        });
+        const snapshot = runs.start(runtime, initial);
+        return {
+          content: [{ type: "text", text: renderRunSnapshot(snapshot) }],
+          details: snapshot,
+        };
+      }
+
       const activities: TeamActivity[] = [];
       let progress: TeamProgress | undefined;
       const details = (): TeamDisplayDetails => ({
@@ -148,16 +195,8 @@ export default function agentTeam(pi: ExtensionAPI): void {
           update();
         },
       });
-      const startMemberId = params.startMemberId?.trim() || "all";
-      if (startMemberId !== "all" && !agents.has(startMemberId))
-        throw new Error(`Unknown startMemberId: ${startMemberId}`);
       try {
-        const result = await runtime.run(
-          startMemberId === "all"
-            ? { channel: { kind: "public" }, body: params.initialMessage }
-            : { channel: { kind: "direct", memberId: startMemberId }, body: params.initialMessage },
-          signal,
-        );
+        const result = await runtime.run(initial, signal);
         return {
           content: [{ type: "text", text: renderFinalContent(result, params.members) }],
           details: finalDetails(details(), result),
@@ -191,6 +230,140 @@ export default function agentTeam(pi: ExtensionAPI): void {
       return view;
     },
   });
+}
+
+function registerTeamControlTools(pi: ExtensionAPI, runs: TeamRunManager): void {
+  registerTeamGet(pi, runs);
+  registerTeamWait(pi, runs);
+  registerTeamPrompt(pi, runs);
+  registerTeamCancel(pi, runs);
+}
+
+function snapshotResult(snapshot: TeamRunSnapshot) {
+  return { content: [{ type: "text" as const, text: renderRunSnapshot(snapshot) }], details: snapshot };
+}
+
+function registerTeamGet(pi: ExtensionAPI, runs: TeamRunManager): void {
+  pi.registerTool({
+    name: "team_get",
+    label: "Get background team",
+    description:
+      "Get a bounded detached-run snapshot: lifecycle, member progress, lightweight events, and final report/manifest.",
+    parameters: Type.Object({ runId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+    async execute(_id, params) {
+      return snapshotResult(runs.get(params.runId));
+    },
+  });
+}
+
+function registerTeamWait(pi: ExtensionAPI, runs: TeamRunManager): void {
+  pi.registerTool({
+    name: "team_wait",
+    label: "Wait for background team",
+    description:
+      "Wait without polling until a detached team changes after afterSeq, settles, or reaches timeoutMs. Omit afterSeq to wait for the next change.",
+    parameters: Type.Object(
+      {
+        runId: Type.String({ minLength: 1 }),
+        afterSeq: Type.Optional(Type.Integer({ minimum: 0 })),
+        timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 300_000 })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_id, params, signal) {
+      return snapshotResult(
+        await runs.wait(params.runId, {
+          afterSeq: params.afterSeq,
+          timeoutMs: params.timeoutMs,
+          signal,
+        }),
+      );
+    },
+  });
+}
+
+function registerTeamPrompt(pi: ExtensionAPI, runs: TeamRunManager): void {
+  pi.registerTool({
+    name: "team_prompt",
+    label: "Prompt background team member",
+    description:
+      "Send requester guidance to one non-terminal detached member, waking it and resuming it when blocked.",
+    parameters: Type.Object(
+      {
+        runId: Type.String({ minLength: 1 }),
+        memberId: Type.String({ minLength: 1 }),
+        message: Type.String({ minLength: 1, maxLength: 8_000 }),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_id, params) {
+      return snapshotResult(runs.prompt(params.runId, params.memberId, params.message));
+    },
+  });
+}
+
+function registerTeamCancel(pi: ExtensionAPI, runs: TeamRunManager): void {
+  pi.registerTool({
+    name: "team_cancel",
+    label: "Cancel background team",
+    description: "Request cancellation of a running detached team.",
+    parameters: Type.Object(
+      {
+        runId: Type.String({ minLength: 1 }),
+        reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1_000 })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_id, params) {
+      return snapshotResult(runs.cancel(params.runId, params.reason));
+    },
+  });
+}
+
+function renderRunSnapshot(snapshot: TeamRunSnapshot): string {
+  const lines = [
+    `team run: ${snapshot.runId}`,
+    `status: ${snapshot.status}`,
+    `stateChangeSeq: ${snapshot.stateChangeSeq}`,
+  ];
+  if (snapshot.progress)
+    lines.push(
+      `progress: ${snapshot.progress.turns} turns · ${snapshot.progress.finished.length} finished · ${snapshot.progress.blocked.length} blocked`,
+      `states: ${JSON.stringify(snapshot.progress.states)}`,
+      ...(snapshot.progress.blocked.length
+        ? [`blocked reasons: ${JSON.stringify(snapshot.progress.blockedReasons)}`]
+        : []),
+    );
+  if (snapshot.result) {
+    lines.push(
+      `settlement: ${snapshot.result.settlement.kind} (${snapshot.result.settlement.meaning}; objective correctness unverified)`,
+    );
+    if (snapshot.result.report)
+      lines.push(
+        `FINAL REPORT — ${snapshot.result.report.reporterId}:`,
+        snapshot.result.report.body,
+      );
+    else lines.push(`NO FINAL REPORT: ${snapshot.result.reportError ?? "no reporter"}`);
+    lines.push("members:");
+    for (const member of snapshot.result.members) {
+      lines.push(
+        `- ${member.id} · ${member.state} · ${member.turns} turns · session ${member.sessionId}${member.sessionRef ? ` · ${member.sessionRef}` : ""}`,
+      );
+      if (member.summary) lines.push(`  finish summary: ${member.summary}`);
+      if (member.error) lines.push(`  error: ${member.error}`);
+      if (member.blockedReason) lines.push(`  blocked: ${member.blockedReason}`);
+      lines.push(`  reflection: ${member.reflection.status}`);
+    }
+    lines.push(
+      `messages: ${snapshot.result.messageCounts.public} public · ${snapshot.result.messageCounts.restricted} restricted`,
+      `audit: ${snapshot.result.audit.events} events · head ${snapshot.result.audit.head}`,
+      `user interventions: ${snapshot.result.userInterventions}`,
+    );
+  }
+  if (snapshot.error) lines.push(`error: ${snapshot.error}`);
+  const latest = snapshot.events.at(-1);
+  if (latest) lines.push(`latest event: #${latest.sequence} ${latest.type} · ${latest.summary}`);
+  return lines.join("\n");
 }
 
 function summarizeLive(details: TeamDisplayDetails): string {
