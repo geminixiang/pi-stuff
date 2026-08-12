@@ -36,7 +36,6 @@ export interface TeamRunResultSummary {
     summary?: string;
     error?: string;
     blockedReason?: string;
-    reflection: TeamResult["members"][number]["reflection"];
   }[];
   messageCounts: { public: number; restricted: number };
   audit: { events: number; head: string };
@@ -303,13 +302,6 @@ function summarizeResult(result: TeamResult): TeamRunResultSummary {
           summary: truncateOptional(member.summary, MAX_MEMBER_FIELD_BYTES),
           error: truncateOptional(member.error, MAX_MEMBER_FIELD_BYTES),
           blockedReason: truncateOptional(member.blockedReason, MAX_MEMBER_FIELD_BYTES),
-          reflection:
-            member.reflection.status === "failed"
-              ? Object.freeze({
-                  ...member.reflection,
-                  error: truncateUtf8(member.reflection.error, MAX_MEMBER_FIELD_BYTES),
-                })
-              : member.reflection,
         }),
       ),
     ),

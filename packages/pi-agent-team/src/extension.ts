@@ -352,7 +352,6 @@ function renderRunSnapshot(snapshot: TeamRunSnapshot): string {
       if (member.summary) lines.push(`  finish summary: ${member.summary}`);
       if (member.error) lines.push(`  error: ${member.error}`);
       if (member.blockedReason) lines.push(`  blocked: ${member.blockedReason}`);
-      lines.push(`  reflection: ${member.reflection.status}`);
     }
     lines.push(
       `messages: ${snapshot.result.messageCounts.public} public · ${snapshot.result.messageCounts.restricted} restricted`,
@@ -411,9 +410,6 @@ export function renderFinalContent(
     );
     if (member.summary) lines.push(`  finish summary: ${member.summary}`);
     if (member.error) lines.push(`  error: ${member.error}`);
-    lines.push(
-      `  reflection: ${member.reflection.status}${member.reflection.status === "failed" ? ` (${member.reflection.code}: ${member.reflection.error})` : ""}`,
-    );
   }
   lines.push(
     `messages: ${result.publicTranscript.length} public · ${result.restrictedMessages.length} restricted (bodies not included here)`,
@@ -442,7 +438,6 @@ export function finalDetails(live: TeamDisplayDetails, result: TeamResult): Team
         id: member.id,
         turns: member.turns,
         summary: member.summary,
-        reflection: member.reflection,
       })),
       ...(result.report ? { report: { reporterId: result.report.reporterId } } : {}),
       ...(result.reportError !== undefined ? { reportError: result.reportError } : {}),

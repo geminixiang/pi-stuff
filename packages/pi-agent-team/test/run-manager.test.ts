@@ -34,7 +34,6 @@ function result(teamId: string, reportBody = "done"): TeamResult {
         turns: 1,
         state: "finished",
         summary: "done",
-        reflection: { status: "no-lesson" },
       },
     ],
     publicTranscript: [],

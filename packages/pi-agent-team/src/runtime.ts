@@ -11,7 +11,6 @@ import {
   type PollOutcome,
   type PollResult,
   type PrincipalId,
-  type ReflectionOutcome,
   type TeamActivity,
   type TeamAgent,
   type TeamCommand,
@@ -405,12 +404,6 @@ export class TeamRuntime {
       },
     );
     const { report, reportError } = await this.collectReport(settlement, signal);
-    const reflections = await this.collectReflections(
-      settlement,
-      report,
-      reportError,
-      signal,
-    );
     return Object.freeze({
       teamId: this.teamId,
       settlement,
@@ -428,7 +421,6 @@ export class TeamRuntime {
             summary: this.finished.get(agent.member.id),
             error: this.errored.get(agent.member.id),
             blockedReason: this.blocked.get(agent.member.id),
-            reflection: reflections.get(agent.member.id)!,
           }),
         ),
       ),
@@ -460,58 +452,6 @@ export class TeamRuntime {
       userInterventions: this.userInterventions,
       auditHead: this.auditHead,
     });
-  }
-
-  private async collectReflections(
-    settlement: TeamSettlement,
-    report: { reporterId: MemberId; body: string } | undefined,
-    reportError: string | undefined,
-    signal?: AbortSignal,
-  ): Promise<ReadonlyMap<MemberId, ReflectionOutcome>> {
-    const outcomes = new Map<MemberId, ReflectionOutcome>();
-    await Promise.all(
-      [...this.agents.entries()].map(async ([memberId, agent]) => {
-        if (!agent.reflect) {
-          outcomes.set(memberId, { status: "no-lesson" });
-          return;
-        }
-        const controller = new AbortController();
-        const relayAbort = () => controller.abort(signal?.reason);
-        signal?.addEventListener("abort", relayAbort, { once: true });
-        const timeout = setTimeout(
-          () => controller.abort(new Error(`Reflection ${memberId} timed out`)),
-          this.options.actionTimeoutMs ?? 300_000,
-        );
-        try {
-          const outcome = await agent.reflect(
-            { settlement, report, reportError },
-            controller.signal,
-          );
-          if (outcome === "no-lesson") {
-            outcomes.set(memberId, { status: "no-lesson" });
-            this.record("reflection.noLesson", memberId);
-          } else {
-            outcomes.set(memberId, { status: "submitted", path: outcome.path });
-            this.record("reflection.submitted", memberId, undefined, {
-              ...(outcome.path ? { pathHash: sha256(outcome.path) } : {}),
-            });
-          }
-        } catch (cause) {
-          if (signal?.aborted) throw cause;
-          const code =
-            cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string"
-              ? cause.code
-              : "reflection-failed";
-          const error = sanitizeReflectionError(cause);
-          outcomes.set(memberId, { status: "failed", code, error });
-          this.record("reflection.failed", memberId, undefined, { code, error });
-        } finally {
-          clearTimeout(timeout);
-          signal?.removeEventListener("abort", relayAbort);
-        }
-      }),
-    );
-    return outcomes;
   }
 
   /**
@@ -1495,19 +1435,6 @@ function describePollOutcome(outcome: PollOutcome): string {
 
 function directChannelId(from: PrincipalId, to: MemberId): string {
   return `direct:${[from, to].sort().join(":")}`;
-}
-
-function sanitizeReflectionError(cause: unknown): string {
-  if (
-    cause &&
-    typeof cause === "object" &&
-    "code" in cause &&
-    cause.code === "invalid-reflection-format"
-  )
-    return "Reflection output did not match the required format";
-  const message = cause instanceof Error ? cause.message : "";
-  if (/^Reflection [A-Za-z0-9_-]+ timed out$/.test(message)) return message;
-  return "Reflection could not be completed";
 }
 
 function sha256(value: string): string {
