@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-agent-team",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Rule-agnostic independent Pi agent sessions with private mailboxes and causal audit",
   "license": "MIT",
   "author": "geminixiang",
