@@ -25,6 +25,7 @@
   },
   "files": [
     "src",
+    "skills",
     "README.md"
   ],
   "type": "module",
@@ -56,6 +57,9 @@
   "pi": {
     "extensions": [
       "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   }
 }

@@ -6,7 +6,7 @@ A rule-agnostic, mailbox-driven agent team runtime for Pi.
 
 ## Install
 
-Install as a [pi package](https://github.com/earendil-works/pi) — this registers `team_start` plus the detached-run control tools in your pi sessions:
+Install as a [pi package](https://github.com/earendil-works/pi) — this registers `team_start`, the retained-team control tools, and the bundled `pi-agent-team` operator skill in your pi sessions:
 
 ```sh
 pi install npm:@geminixiang/pi-agent-team
@@ -21,6 +21,8 @@ pi -e npm:@geminixiang/pi-agent-team
 `pi remove npm:@geminixiang/pi-agent-team` uninstalls it. Use `pi install -l` to write to project settings (`.pi/settings.json`) instead of user settings.
 
 ## What ships
+
+The bundled `pi-agent-team` skill teaches the parent agent when to use foreground or detached mode, how to observe and intervene without polling or unsolicited guidance, and how to continue a settled retained team. It is withheld from member sessions, which lack `team_start`, while their other installed skills remain available.
 
 Production code knows nothing about relay counting, werewolf, expected answers, roles, or phases. It provides only generic coordination — including a generic vote tally, not a domain-specific one: the runtime counts opaque choices and reports ties honestly, it never knows what a vote is *for*.
 

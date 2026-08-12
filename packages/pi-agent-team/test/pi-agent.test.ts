@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TeamTurn } from "../src/domain.js";
-import { formatTurn, PiTeamAgent } from "../src/pi-agent.js";
+import { excludeTeamOperatorSkill, formatTurn, PiTeamAgent } from "../src/pi-agent.js";
 import type { TurnState } from "../src/turn-state.js";
 
 function baseTurn(digest: Partial<TeamTurn["digest"]> = {}): TeamTurn {
@@ -25,6 +25,15 @@ function baseTurn(digest: Partial<TeamTurn["digest"]> = {}): TeamTurn {
     turn: 1,
   };
 }
+
+test("member sessions exclude only the parent team operator skill", () => {
+  const skills = [
+    { name: "pi-agent-team", marker: 1 },
+    { name: "code-review", marker: 2 },
+    { name: "browser", marker: 3 },
+  ];
+  assert.deepEqual(excludeTeamOperatorSkill(skills), skills.slice(1));
+});
 
 test("formatTurn omits OPEN POLLS when no poll is live, matching HELD CLAIMS/YOUR GROUPS' own omit-when-empty behavior", () => {
   const text = formatTurn(baseTurn());
