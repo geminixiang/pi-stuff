@@ -62,6 +62,19 @@ export interface ManagedTeamRuntime {
     signal?: AbortSignal,
   ): Promise<TeamResult>;
   intervene(memberId: MemberId, message: string): void;
+  hasMember(memberId: MemberId): boolean;
+  next(
+    objective: string,
+    options?: {
+      waitForIntervention?: boolean;
+      reporterId?: MemberId;
+      reportPrompt?: string;
+      onActivity?: (activity: TeamActivity) => void;
+      onProgress?: (progress: TeamProgress) => void;
+    },
+    requesterInitiated?: boolean,
+  ): ManagedTeamRuntime;
+  close?(): Promise<void> | void;
 }
 
 interface RunRecord {
@@ -102,19 +115,30 @@ export class TeamRunManager {
     };
     this.runs.set(runId, record);
     this.bump(record, "started", `team ${runtime.teamId} started`);
-    record.completion = runtime.run(initial, record.controller.signal).then(
-      (result) => {
-        record.status = "settled";
-        record.result = summarizeResult(result);
-        this.bump(record, "settled", `${result.settlement.kind} (${result.settlement.meaning})`);
-      },
-      (cause) => {
-        const message = truncateUtf8(errorMessage(cause), MAX_EVENT_SUMMARY_BYTES);
-        record.error = message;
-        record.status = record.controller.signal.aborted ? "cancelled" : "failed";
-        this.bump(record, record.status, message);
-      },
-    );
+    this.launch(record, initial);
+    return this.snapshot(record);
+  }
+
+  /** Retain a synchronously completed team so later prompts can continue it. */
+  retain(runtime: ManagedTeamRuntime, result: TeamResult): TeamRunSnapshot {
+    const runId = runtime.teamId;
+    if (this.runs.has(runId)) throw new Error(`Team run already exists: ${runId}`);
+    this.makeRoom();
+    const now = Date.now();
+    const record: RunRecord = {
+      runtime,
+      controller: new AbortController(),
+      status: "settled",
+      sequence: 0,
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+      waiters: new Set(),
+      result: summarizeResult(result),
+      completion: Promise.resolve(),
+    };
+    this.runs.set(runId, record);
+    this.bump(record, "settled", `${result.settlement.kind} (${result.settlement.meaning})`);
     return this.snapshot(record);
   }
 
@@ -141,9 +165,35 @@ export class TeamRunManager {
     if (!message.trim()) throw new Error("Team prompt message must not be empty");
     if (Buffer.byteLength(message, "utf8") > 8_000)
       throw new Error("Team prompt message must not exceed 8000 bytes");
-    const record = this.requireRunning(runId);
-    record.runtime.intervene(memberId, message);
-    this.bump(record, "prompted", `prompted member ${memberId}`);
+    const record = this.requireRun(runId);
+    if (record.status === "running") {
+      record.runtime.intervene(memberId, message);
+      this.bump(record, "prompted", `prompted member ${memberId}`);
+      return this.snapshot(record);
+    }
+    if (record.status !== "settled")
+      throw new Error(`Team run ${runId} is ${record.status} and no longer accepts prompts`);
+    if (!record.runtime.hasMember(memberId)) throw new Error(`Unknown member: ${memberId}`);
+
+    record.runtime = record.runtime.next(
+      message,
+      {
+        waitForIntervention: true,
+        reporterId: memberId,
+        reportPrompt:
+          "Reply directly to the requester about this continuation objective. Include relevant work or teammate results, and make the response stand alone.",
+        onActivity: (activity) => this.observeActivity(runId, activity),
+        onProgress: (progress) => this.observeProgress(runId, progress),
+      },
+      true,
+    );
+    record.controller = new AbortController();
+    record.status = "running";
+    record.progress = undefined;
+    record.result = undefined;
+    record.error = undefined;
+    this.bump(record, "prompted", `continued team by prompting member ${memberId}`);
+    this.launch(record, { channel: { kind: "direct", memberId }, body: message });
     return this.snapshot(record);
   }
 
@@ -166,6 +216,7 @@ export class TeamRunManager {
   async shutdown(reason = "parent session shut down"): Promise<void> {
     this.cancelAll(reason);
     await Promise.all([...this.runs.values()].map((record) => record.completion));
+    await Promise.allSettled([...this.runs.values()].map((record) => record.runtime.close?.()));
   }
 
   async wait(
@@ -216,6 +267,25 @@ export class TeamRunManager {
     });
   }
 
+  private launch(
+    record: RunRecord,
+    initial: TeamInitialPost | readonly TeamInitialPost[],
+  ): void {
+    record.completion = record.runtime.run(initial, record.controller.signal).then(
+      (result) => {
+        record.status = "settled";
+        record.result = summarizeResult(result);
+        this.bump(record, "settled", `${result.settlement.kind} (${result.settlement.meaning})`);
+      },
+      (cause) => {
+        const message = truncateUtf8(errorMessage(cause), MAX_EVENT_SUMMARY_BYTES);
+        record.error = message;
+        record.status = record.controller.signal.aborted ? "cancelled" : "failed";
+        this.bump(record, record.status, message);
+      },
+    );
+  }
+
   private bump(record: RunRecord, type: TeamRunEvent["type"], summary: string): void {
     record.sequence += 1;
     record.updatedAt = Date.now();
@@ -238,6 +308,7 @@ export class TeamRunManager {
     if (!oldestTerminal)
       throw new Error(`Too many active team runs; maximum is ${MAX_TEAM_RUNS}`);
     this.runs.delete(oldestTerminal[0]);
+    void Promise.resolve(oldestTerminal[1].runtime.close?.()).catch(() => {});
   }
 
   private requireRun(runId: string): RunRecord {

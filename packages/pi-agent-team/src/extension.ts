@@ -56,7 +56,7 @@ export default function agentTeam(pi: ExtensionAPI): void {
     name: "team_start",
     label: "Start independent agent team",
     description:
-      "Create independent agent sessions with public, direct, and restricted group channels. By default this waits and shows live activity; detached mode returns a runId for team_get/team_wait/team_prompt/team_cancel. The runtime knows no task rules or expected answers.",
+      "Create a retained team of independent agent sessions with public, direct, and restricted group channels. By default this waits and shows live activity; detached mode returns immediately. After either mode settles, team_prompt starts a fresh round with the addressed member while preserving every member session. The runtime knows no task rules or expected answers.",
     promptSnippet: "Start an independent mailbox-driven agent team",
     promptGuidelines: [
       "Give the team the user's objective and initial message without adding expected answers.",
@@ -195,13 +195,17 @@ export default function agentTeam(pi: ExtensionAPI): void {
           update();
         },
       });
+      let retained = false;
       try {
         const result = await runtime.run(initial, signal);
+        runs.retain(runtime, result);
+        retained = true;
         return {
           content: [{ type: "text", text: renderFinalContent(result, params.members) }],
           details: finalDetails(details(), result),
         };
       } finally {
+        if (!retained) await runtime.close();
         if (usesWidget) ctx.ui.setWidget(widgetKey, undefined);
       }
     },
@@ -246,9 +250,9 @@ function snapshotResult(snapshot: TeamRunSnapshot) {
 function registerTeamGet(pi: ExtensionAPI, runs: TeamRunManager): void {
   pi.registerTool({
     name: "team_get",
-    label: "Get background team",
+    label: "Get retained team",
     description:
-      "Get a bounded detached-run snapshot: lifecycle, member progress, lightweight events, and final report/manifest.",
+      "Get a bounded retained-team snapshot: lifecycle, member progress, lightweight events, and the latest round's report/manifest.",
     parameters: Type.Object({ runId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
     async execute(_id, params) {
       return snapshotResult(runs.get(params.runId));
@@ -259,9 +263,9 @@ function registerTeamGet(pi: ExtensionAPI, runs: TeamRunManager): void {
 function registerTeamWait(pi: ExtensionAPI, runs: TeamRunManager): void {
   pi.registerTool({
     name: "team_wait",
-    label: "Wait for background team",
+    label: "Wait for retained team",
     description:
-      "Wait without polling until a detached team changes after afterSeq, settles, or reaches timeoutMs. Omit afterSeq to wait for the next change.",
+      "Wait without polling until a team changes after afterSeq, its current round settles, or timeoutMs is reached. Omit afterSeq to wait for the next change.",
     parameters: Type.Object(
       {
         runId: Type.String({ minLength: 1 }),
@@ -285,9 +289,9 @@ function registerTeamWait(pi: ExtensionAPI, runs: TeamRunManager): void {
 function registerTeamPrompt(pi: ExtensionAPI, runs: TeamRunManager): void {
   pi.registerTool({
     name: "team_prompt",
-    label: "Prompt background team member",
+    label: "Prompt retained team member",
     description:
-      "Send requester guidance to one non-terminal detached member, waking it and resuming it when blocked.",
+      "Send requester guidance to one member. During a running round this wakes or unblocks that member; after settlement it starts a clean continuation round with the same member sessions, uses the message as the new objective, and designates that member to report the response.",
     parameters: Type.Object(
       {
         runId: Type.String({ minLength: 1 }),
@@ -415,6 +419,7 @@ export function renderFinalContent(
     `messages: ${result.publicTranscript.length} public · ${result.restrictedMessages.length} restricted (bodies not included here)`,
     `audit: ${result.events.length} events · head ${result.auditHead}`,
     "Each member's full first-person history is in its session file listed above.",
+    `The team remains available in this parent session: use team_prompt with runId ${result.teamId} and a member id to start a continuation round.`,
   );
   return lines.join("\n");
 }

@@ -433,6 +433,44 @@ test("run() may only be called once per TeamRuntime instance", async () => {
   );
 });
 
+test("next() starts a clean round while retaining member sessions", async () => {
+  class ReusableAgent {
+    readonly sessionId = crypto.randomUUID();
+    acts = 0;
+    closes = 0;
+    constructor(readonly member: TeamMember) {}
+    async act(): Promise<readonly TeamCommand[]> {
+      this.acts++;
+      return [{ type: "finish", summary: `round-${this.acts}` }];
+    }
+    async close(): Promise<void> {
+      this.closes++;
+    }
+  }
+  const agents = [
+    new ReusableAgent({ id: "a", name: "A" }),
+    new ReusableAgent({ id: "b", name: "B" }),
+  ];
+  const runtime = new TeamRuntime(
+    "first task",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  );
+  const first = await runtime.run({ channel: { kind: "public" }, body: "first" });
+  const continuation = runtime.next("second task", {}, true);
+  const second = await continuation.run({ channel: { kind: "public" }, body: "second" });
+
+  assert.equal(continuation.teamId, runtime.teamId);
+  assert.equal(continuation.objective, "second task");
+  assert.deepEqual(first.members.map((member) => member.sessionId), second.members.map((member) => member.sessionId));
+  assert.deepEqual(agents.map((agent) => agent.acts), [2, 2]);
+  assert.deepEqual(agents.map((agent) => agent.closes), [0, 0]);
+  assert.ok(second.members.every((member) => member.turns === 1));
+  assert.equal(second.userInterventions, 1);
+
+  await continuation.close();
+  assert.deepEqual(agents.map((agent) => agent.closes), [1, 1]);
+});
+
 test("claims are atomic and audit chain detects tampering", async () => {
   const agents = [new ClaimAgent({ id: "a", name: "A" }), new ClaimAgent({ id: "b", name: "B" })];
   const result = await new TeamRuntime(

@@ -61,8 +61,13 @@ function progress(teamId: string): TeamProgress {
 class FakeRuntime implements ManagedTeamRuntime {
   readonly pending = deferred<TeamResult>();
   readonly prompts: { memberId: string; message: string }[] = [];
+  continuation?: FakeRuntime;
 
-  constructor(readonly teamId: string) {}
+  constructor(
+    readonly teamId: string,
+    readonly objective = "initial",
+    readonly continuationOptions?: Parameters<ManagedTeamRuntime["next"]>[1],
+  ) {}
 
   run(_initial: unknown, signal?: AbortSignal): Promise<TeamResult> {
     signal?.addEventListener(
@@ -75,6 +80,17 @@ class FakeRuntime implements ManagedTeamRuntime {
 
   intervene(memberId: string, message: string): void {
     this.prompts.push({ memberId, message });
+  }
+
+  hasMember(memberId: string): boolean {
+    return memberId === "a";
+  }
+
+  next(
+    objective: string,
+    options?: Parameters<ManagedTeamRuntime["next"]>[1],
+  ): FakeRuntime {
+    return (this.continuation = new FakeRuntime(this.teamId, objective, options));
   }
 }
 
@@ -112,6 +128,46 @@ test("detached runs return immediately, wait by sequence without polling, and ex
   assert.equal(settled.result?.report?.body, "done");
   assert.deepEqual(settled.result?.messageCounts, { public: 0, restricted: 0 });
   assert.equal("publicTranscript" in (settled.result ?? {}), false, "raw transcript is never exposed");
+});
+
+test("a settled team accepts a new prompt as a fresh round over the same handle", async () => {
+  const manager = new TeamRunManager();
+  const runtime = new FakeRuntime("run-continue");
+  const started = manager.start(runtime, { channel: { kind: "public" }, body: "first" });
+  runtime.pending.resolve(result("run-continue", "first done"));
+  const settled = await manager.wait("run-continue", {
+    afterSeq: started.stateChangeSeq,
+    timeoutMs: 1_000,
+  });
+
+  const continued = manager.prompt("run-continue", "a", "do a different task");
+  assert.equal(continued.status, "running");
+  assert.equal(continued.runId, "run-continue");
+  assert.equal(runtime.continuation?.objective, "do a different task");
+  assert.equal(runtime.continuation?.continuationOptions?.reporterId, "a");
+  assert.match(runtime.continuation?.continuationOptions?.reportPrompt ?? "", /Reply directly/);
+  assert.equal(continued.result, undefined, "the previous round result is not presented as current");
+
+  const beforeSecondSettlement = continued.stateChangeSeq;
+  runtime.continuation!.pending.resolve(result("run-continue", "second done"));
+  const second = await manager.wait("run-continue", {
+    afterSeq: beforeSecondSettlement,
+    timeoutMs: 1_000,
+  });
+  assert.equal(second.status, "settled");
+  assert.equal(second.result?.report?.body, "second done");
+  assert.ok(second.events.some((event) => event.summary === "continued team by prompting member a"));
+});
+
+test("a synchronously settled team can be retained and continued", () => {
+  const manager = new TeamRunManager();
+  const runtime = new FakeRuntime("run-retained");
+  const retained = manager.retain(runtime, result("run-retained"));
+  assert.equal(retained.status, "settled");
+
+  const continued = manager.prompt("run-retained", "a", "follow up");
+  assert.equal(continued.status, "running");
+  assert.equal(runtime.continuation?.objective, "follow up");
 });
 
 test("oversized reports are truncated in snapshots while the reporter session pointer remains", async () => {

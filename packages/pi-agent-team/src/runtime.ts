@@ -87,7 +87,7 @@ interface OpenPoll {
 }
 
 export class TeamRuntime {
-  readonly teamId = randomUUID();
+  readonly teamId: string;
   private readonly observations = new Map<MemberId, MessageEnvelope[]>();
   private readonly disabledObservers = new Set<"onProgress" | "onActivity">();
   private readonly envelopes: MessageEnvelope[] = [];
@@ -141,7 +141,7 @@ export class TeamRuntime {
   private auditHead = "0".repeat(64);
   private recent = "Team created";
   private started = false;
-  private userInterventions = 0;
+  private userInterventions: number;
   /**
    * Resolver for the single pending quiescent intervention wait, if the
    * execute loop is currently parked in awaitIntervention(). intervene()
@@ -167,7 +167,11 @@ export class TeamRuntime {
     readonly objective: string,
     private readonly agents: ReadonlyMap<MemberId, TeamAgent>,
     private readonly options: TeamRuntimeOptions = {},
+    teamId: string = randomUUID(),
+    initialUserInterventions = 0,
   ) {
+    this.teamId = teamId;
+    this.userInterventions = initialUserInterventions;
     if (agents.size < 2) throw new Error("A team requires at least two agents");
     for (const [id, agent] of agents) {
       if (id !== agent.member.id) throw new Error(`Agent map identity mismatch: ${id}`);
@@ -184,13 +188,11 @@ export class TeamRuntime {
   }
 
   /**
-   * A TeamRuntime instance runs exactly once. Its state (finished, errored,
-   * claims, polls, envelopes, events) accumulates across the single run and
-   * its agents are closed in the finally block below; calling run() again
-   * would resume scheduling over already-terminal members and already-
-   * disposed agent sessions, silently producing a second, semantically
-   * broken team.started/settlement pair in the same audit chain. Construct
-   * a new TeamRuntime for another run instead.
+   * A TeamRuntime instance represents one coordination round and runs once.
+   * Settlement ends that round, not the underlying member sessions. Call
+   * next() to create a fresh round over the same agents and their existing
+   * first-person histories; call close() only when the team itself is being
+   * discarded.
    */
   async run(
     initial: TeamInitialPost | readonly TeamInitialPost[],
@@ -198,17 +200,43 @@ export class TeamRuntime {
   ): Promise<TeamResult> {
     if (this.started)
       throw new Error(
-        "TeamRuntime.run() may only be called once per instance; construct a new TeamRuntime for another run",
+        "TeamRuntime.run() may only be called once per round; call next() to continue the team",
       );
     this.started = true;
     try {
       return await this.execute(initial, signal);
     } finally {
-      // Also close the intervention channel on abort/error paths that exit
-      // before execute() reaches ordinary settlement.
+      // Close the intervention channel on ordinary settlement and on
+      // abort/error paths, but retain the member sessions for a later round.
       this.settled = true;
-      await Promise.allSettled([...this.agents.values()].map((agent) => agent.close?.()));
     }
+  }
+
+  hasMember(memberId: MemberId): boolean {
+    return this.agents.has(memberId);
+  }
+
+  /** Create a clean coordination round while retaining every agent session. */
+  next(
+    objective: string,
+    options: Partial<TeamRuntimeOptions> = {},
+    requesterInitiated = false,
+  ): TeamRuntime {
+    if (!this.started || !this.settled)
+      throw new Error("TeamRuntime.next() requires the current round to be settled");
+    if (!objective.trim()) throw new Error("Continuation objective must not be empty");
+    return new TeamRuntime(
+      objective,
+      this.agents,
+      { ...this.options, ...options },
+      this.teamId,
+      requesterInitiated ? 1 : 0,
+    );
+  }
+
+  /** Permanently release the retained member sessions. */
+  async close(): Promise<void> {
+    await Promise.allSettled([...this.agents.values()].map((agent) => agent.close?.()));
   }
 
   progress(): TeamProgress {
@@ -240,7 +268,7 @@ export class TeamRuntime {
       throw new Error("TeamRuntime.intervene() may only be called while run() is executing");
     if (this.settled)
       throw new Error(
-        "team has already settled; agent sessions are closed — construct a new TeamRuntime for another run",
+        "the current team round has already settled; start a continuation round before intervening",
       );
     if (!this.agents.has(memberId)) throw new Error(`Unknown member: ${memberId}`);
     if (this.finished.has(memberId) || this.errored.has(memberId))

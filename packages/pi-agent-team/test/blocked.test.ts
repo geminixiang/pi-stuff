@@ -322,7 +322,7 @@ test("aborting while parked rejects the run instead of hanging forever", async (
   assert.throws(
     () => runtime.intervene("a", "too late"),
     /already settled/,
-    "an aborted run closes its intervention channel along with agent sessions",
+    "an aborted round closes its intervention channel while retaining agent sessions",
   );
 });
 
