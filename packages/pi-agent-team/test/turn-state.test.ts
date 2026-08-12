@@ -18,7 +18,15 @@ test("wait, finish, block, and claim end the turn; say/dm/handoff/release/group 
     { type: "release", resource: "r" },
     { type: "create-group", channelId: "g", name: "G", members: ["b"] },
     { type: "group-send", channelId: "g", body: "hi" },
+    {
+      type: "vote-open",
+      pollId: "p",
+      initiatorVotes: false,
+      maxReminders: 1,
+      onReminderExhausted: "abstain",
+    },
     { type: "vote-cast", pollId: "p", choice: "a" },
+    { type: "vote-abstain", pollId: "p" },
     { type: "vote-close", pollId: "p" },
   ];
   for (const command of terminal) assert.equal(endsTurn(command), true, command.type);

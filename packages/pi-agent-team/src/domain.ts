@@ -67,7 +67,10 @@ export interface TeamDigest {
   groups: readonly { id: ChannelId; name: string; members: readonly MemberId[] }[];
   polls: readonly {
     pollId: string;
+    initiator: MemberId;
     tally: Readonly<Record<string, number>>;
+    abstained: readonly MemberId[];
+    autoAbstained: readonly MemberId[];
     missing: readonly MemberId[];
   }[];
 }
@@ -90,7 +93,15 @@ export type TeamCommand =
   | { type: "group-send"; channelId: ChannelId; body: string }
   | { type: "claim"; resource: string }
   | { type: "release"; resource: string }
+  | {
+      type: "vote-open";
+      pollId: string;
+      initiatorVotes: boolean;
+      maxReminders: number;
+      onReminderExhausted: "leave-missing" | "abstain";
+    }
   | { type: "vote-cast"; pollId: string; choice: string }
+  | { type: "vote-abstain"; pollId: string }
   | { type: "vote-close"; pollId: string }
   | { type: "handoff"; to: MemberId; body: string }
   | { type: "finish"; summary: string }
@@ -111,17 +122,18 @@ export type PollOutcome =
 /**
  * The runtime-computed, code-tallied result of a closed poll. `votes` is
  * the full per-member breakdown — polls are open ballots, not secret, same
- * transparency stance as claim resource names. `eligible` excludes any
- * terminal (errored *or* finished) member who never cast, at close time
- * (quorum awareness, not vote validity) — a member who finishes without
- * ever casting drops the electorate the same way an errored one does;
- * `missing` is the eligible members who never cast before close, so a
- * closer can tell an honest tie from a premature close.
+ * transparency stance as claim resource names. Abstention is first-class
+ * response state and never becomes a tally choice; `autoAbstained` names
+ * the members whose configured reminder budget expired. `eligible`
+ * excludes terminal non-responders at close time; `missing` contains the
+ * remaining eligible members who neither voted nor abstained.
  */
 export interface PollResult {
   pollId: string;
   tally: Readonly<Record<string, number>>;
   votes: Readonly<Record<MemberId, string>>;
+  abstained: readonly MemberId[];
+  autoAbstained: readonly MemberId[];
   eligible: readonly MemberId[];
   missing: readonly MemberId[];
   outcome: PollOutcome;
@@ -161,7 +173,10 @@ export interface AuditEvent {
     | "member.claimed"
     | "member.claimRejected"
     | "claim.released"
+    | "poll.opened"
     | "poll.cast"
+    | "poll.abstained"
+    | "poll.reminded"
     | "poll.closed"
     | "member.finished"
     | "member.errored"

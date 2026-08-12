@@ -38,10 +38,22 @@ test("formatTurn surfaces live poll tally and missing voters directly in the pro
   // turns the digest into the actual prompt was silently dropping it.
   const text = formatTurn(
     baseTurn({
-      polls: [{ pollId: "guesser", tally: { a: 2, b: 1 }, missing: ["c"] }],
+      polls: [
+        {
+          pollId: "guesser",
+          initiator: "a",
+          tally: { a: 2, b: 1 },
+          abstained: [],
+          autoAbstained: [],
+          missing: ["c"],
+        },
+      ],
     }),
   );
-  assert.match(text, /OPEN POLLS: guesser tally=\{"a":2,"b":1\} missing=\["c"\]/);
+  assert.match(
+    text,
+    /OPEN POLLS: guesser initiator=a tally=\{"a":2,"b":1\} abstained=\[\] autoAbstained=\[\] missing=\["c"\]/,
+  );
 });
 
 test("formatTurn surfaces a blocked member's state and reason in the digest", () => {

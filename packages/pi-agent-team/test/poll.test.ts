@@ -284,6 +284,274 @@ test("once every eligible member has cast, the runtime wakes everyone instead of
   assert.match(closed!.body, /"y":1/);
 });
 
+test("a non-voting initiator is excluded and is woken directly when every voter responds", async () => {
+  const notices: string[] = [];
+  class Judge {
+    readonly member = { id: "judge", name: "Judge" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      notices.push(...turn.observations.map((message) => message.body));
+      if (turn.turn === 1) return [{ type: "claim", resource: "exile" }];
+      if (turn.turn === 2)
+        return [
+          {
+            type: "vote-open",
+            pollId: "exile",
+            initiatorVotes: false,
+            maxReminders: 1,
+            onReminderExhausted: "abstain",
+          },
+          { type: "send", to: "p1", body: "vote" },
+          { type: "send", to: "p2", body: "vote" },
+          { type: "wait" },
+        ];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_READY_TO_CLOSE")))
+        return [{ type: "vote-close", pollId: "exile" }, { type: "finish", summary: "closed" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      return [{ type: "wait" }];
+    }
+  }
+  class Voter {
+    readonly sessionId = crypto.randomUUID();
+    constructor(readonly member: TeamMember, private readonly choice: string) {}
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      return [{ type: "vote-cast", pollId: "exile", choice: this.choice }, { type: "wait" }];
+    }
+  }
+  const agents = [
+    new Judge(),
+    new Voter({ id: "p1", name: "P1" }, "x"),
+    new Voter({ id: "p2", name: "P2" }, "y"),
+  ];
+  const result = await new TeamRuntime(
+    "moderated poll",
+    new Map(agents.map((agent) => [agent.member.id, agent])),
+  ).run({ channel: { kind: "direct", memberId: "judge" }, body: "start" });
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.ok(notices.some((body) => body.startsWith("POLL_READY_TO_CLOSE")));
+  const closed = result.events.find((event) => event.type === "poll.closed");
+  assert.deepEqual(closed?.data.missing, []);
+  const opened = result.events.find((event) => event.type === "poll.opened");
+  assert.deepEqual(opened?.data.eligible, ["p1", "p2"], "the judge is not in the electorate");
+});
+
+test("team_vote_open rejects unclaimed ids and invalid reminder policy", async () => {
+  class InvalidOpener {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1)
+        return [
+          {
+            type: "vote-open",
+            pollId: "p",
+            initiatorVotes: true,
+            maxReminders: 1,
+            onReminderExhausted: "abstain",
+          },
+        ];
+      if (turn.turn === 2) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 3)
+        return [
+          {
+            type: "vote-open",
+            pollId: "p",
+            initiatorVotes: true,
+            maxReminders: 4,
+            onReminderExhausted: "abstain",
+          },
+        ];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class Other {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const opener = new InvalidOpener();
+  const other = new Other();
+  const result = await new TeamRuntime(
+    "invalid policy",
+    new Map([
+      [opener.member.id, opener],
+      [other.member.id, other],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+  const failures = result.events.filter((event) => event.type === "command.failed");
+  assert.equal(failures.length, 2);
+  assert.match(String(failures[0].data.error), /must hold claim/);
+  assert.match(String(failures[1].data.error), /integer from 0 to 3/);
+  assert.equal(result.events.some((event) => event.type === "poll.opened"), false);
+});
+
+test("a member excluded by initiatorVotes=false cannot cast into the poll", async () => {
+  class Judge {
+    readonly member = { id: "judge", name: "Judge" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
+        return [
+          {
+            type: "vote-open",
+            pollId: "p",
+            initiatorVotes: false,
+            maxReminders: 0,
+            onReminderExhausted: "leave-missing",
+          },
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "finish", summary: "should be discarded after rejection" },
+        ];
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  class Voter {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [{ type: "finish", summary: "done" }];
+    }
+  }
+  const judge = new Judge();
+  const voter = new Voter();
+  const result = await new TeamRuntime(
+    "eligibility",
+    new Map([
+      [judge.member.id, judge],
+      [voter.member.id, voter],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "judge" }, body: "start" });
+  assert.ok(
+    result.events.some(
+      (event) =>
+        event.type === "command.failed" &&
+        event.memberId === "judge" &&
+        event.data.commandType === "vote-cast",
+    ),
+  );
+  assert.equal(result.events.some((event) => event.type === "poll.cast"), false);
+});
+
+test("idle missing voters get bounded reminders and may explicitly abstain", async () => {
+  class Initiator {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
+        return [
+          {
+            type: "vote-open",
+            pollId: "p",
+            initiatorVotes: true,
+            maxReminders: 2,
+            onReminderExhausted: "leave-missing",
+          },
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "wait" },
+        ];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_READY_TO_CLOSE")))
+        return [{ type: "vote-close", pollId: "p" }, { type: "finish", summary: "closed" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      return [{ type: "wait" }];
+    }
+  }
+  class Abstainer {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    reminders = 0;
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_REMINDER"))) {
+        this.reminders += 1;
+        if (this.reminders === 2) return [{ type: "vote-abstain", pollId: "p" }, { type: "wait" }];
+      }
+      return [{ type: "wait" }];
+    }
+  }
+  const initiator = new Initiator();
+  const abstainer = new Abstainer();
+  const result = await new TeamRuntime(
+    "remind",
+    new Map([
+      [initiator.member.id, initiator],
+      [abstainer.member.id, abstainer],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(abstainer.reminders, 2);
+  assert.equal(result.events.filter((event) => event.type === "poll.reminded").length, 2);
+  const closed = result.events.find((event) => event.type === "poll.closed");
+  assert.deepEqual(closed?.data.abstained, ["b"]);
+  assert.deepEqual(closed?.data.autoAbstained, []);
+  assert.deepEqual(closed?.data.tally, { x: 1 }, "abstention is not a winning choice");
+});
+
+test("exhausted reminder budgets can auto-abstain without an unbounded wake loop", async () => {
+  class Initiator {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.turn === 1) return [{ type: "claim", resource: "p" }];
+      if (turn.turn === 2)
+        return [
+          {
+            type: "vote-open",
+            pollId: "p",
+            initiatorVotes: true,
+            maxReminders: 1,
+            onReminderExhausted: "abstain",
+          },
+          { type: "vote-cast", pollId: "p", choice: "x" },
+          { type: "wait" },
+        ];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_READY_TO_CLOSE")))
+        return [{ type: "vote-close", pollId: "p" }, { type: "finish", summary: "closed" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      return [{ type: "wait" }];
+    }
+  }
+  class Silent {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    reminders = 0;
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      if (turn.observations.some((message) => message.body.startsWith("POLL_CLOSED")))
+        return [{ type: "finish", summary: "done" }];
+      if (turn.observations.some((message) => message.body.startsWith("POLL_REMINDER")))
+        this.reminders += 1;
+      return [{ type: "wait" }];
+    }
+  }
+  const initiator = new Initiator();
+  const silent = new Silent();
+  const result = await new TeamRuntime(
+    "auto abstain",
+    new Map([
+      [initiator.member.id, initiator],
+      [silent.member.id, silent],
+    ]),
+  ).run({ channel: { kind: "direct", memberId: "a" }, body: "start" });
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(silent.reminders, 1);
+  const closed = result.events.find((event) => event.type === "poll.closed");
+  assert.deepEqual(closed?.data.abstained, ["b"]);
+  assert.deepEqual(closed?.data.autoAbstained, ["b"]);
+  assert.deepEqual(closed?.data.tally, { x: 1 });
+});
+
 test("a tied poll is reported honestly, never auto-broken", async () => {
   const members: TeamMember[] = [
     { id: "a", name: "A" },

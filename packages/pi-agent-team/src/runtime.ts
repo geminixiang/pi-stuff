@@ -73,6 +73,19 @@ export type TeamInitialPost =
   | { channel: { kind: "public" }; body: string }
   | { channel: { kind: "direct"; memberId: MemberId }; body: string };
 
+interface OpenPoll {
+  explicit: boolean;
+  initiator: MemberId;
+  initiatorVotes: boolean;
+  maxReminders: number;
+  onReminderExhausted: "leave-missing" | "abstain";
+  eligible: Set<MemberId>;
+  votes: Map<MemberId, string>;
+  abstained: Set<MemberId>;
+  autoAbstained: Set<MemberId>;
+  reminders: Map<MemberId, number>;
+}
+
 export class TeamRuntime {
   readonly teamId = randomUUID();
   private readonly observations = new Map<MemberId, MessageEnvelope[]>();
@@ -105,9 +118,9 @@ export class TeamRuntime {
    */
   private readonly readyCause = new Map<MemberId, MessageId>();
   private readonly claims = new Map<string, MemberId>();
-  private readonly polls = new Map<string, Map<MemberId, string>>();
+  private readonly polls = new Map<string, OpenPoll>();
   private readonly closedPolls = new Map<string, PollResult>();
-  private readonly fullyCastPolls = new Set<string>();
+  private readonly readyPolls = new Set<string>();
   private readonly states = new Map<MemberId, TeamMemberState>();
   /**
    * The members made ready together by a *single* initial post — the common
@@ -293,6 +306,11 @@ export class TeamRuntime {
     let exhausted = false;
     while (!signal?.aborted) {
       if (!this.ready.size && !this.promoteStarvedMembers()) {
+        // Open polls get a bounded liveness pass before ordinary
+        // quiescence. Missing voters are reminded only at this natural idle
+        // boundary, never busy-polled; exhausted voters can become explicit
+        // abstentions according to the poll's declared policy.
+        if (this.advanceOpenPollsAtQuiescence()) continue;
         // Blocked members pause the team quiescently rather than settling:
         // nothing is runnable, no mail is waiting, and the only way forward
         // is external intervention. With waitForIntervention opted in, the
@@ -885,8 +903,16 @@ export class TeamRuntime {
       this.createGroup(from, command.channelId, command.name, command.members);
       return;
     }
+    if (command.type === "vote-open") {
+      this.openPoll(from, command);
+      return;
+    }
     if (command.type === "vote-cast") {
       this.castVote(from, command.pollId, command.choice);
+      return;
+    }
+    if (command.type === "vote-abstain") {
+      this.abstainVote(from, command.pollId);
       return;
     }
     if (command.type === "vote-close") {
@@ -1027,68 +1053,169 @@ export class TeamRuntime {
     );
   }
 
-  private castVote(from: MemberId, pollId: string, choice: string): void {
+  private openPoll(
+    from: MemberId,
+    command: Extract<TeamCommand, { type: "vote-open" }>,
+  ): void {
+    const { pollId, initiatorVotes, maxReminders, onReminderExhausted } = command;
+    if (!pollId.trim()) throw new Error("poll id must not be empty");
     if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
-    const isNewPoll = !this.polls.has(pollId);
-    // A claim on the pollId reserves the id itself against duplicate polls
-    // for the same purpose — it does not require the claim holder
-    // specifically to cast the first vote. Once anyone holds the claim,
-    // any member may cast, including the very first vote; only a truly
-    // unclaimed pollId is blocked, since that's the only case a caller
-    // could otherwise spin up a brand-new poll unreserved.
-    if (isNewPoll && !this.claims.has(pollId))
-      throw new Error(`must claim ${pollId} before opening a new poll with that id`);
-    let votes = this.polls.get(pollId);
-    if (!votes) {
-      votes = new Map();
-      this.polls.set(pollId, votes);
-    }
-    votes.set(from, choice);
-    this.record("poll.cast", from, undefined, { pollId, choice });
-    this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
-    this.maybeAnnounceFullyCast(pollId, votes);
-  }
-
-  /**
-   * Casting a vote is otherwise silent — unlike a claim or a group, it posts
-   * nothing observable. Without this, every eligible voter can cast and then
-   * WAIT, and nothing ever wakes anyone to notice the poll is ready to
-   * close: a live run showed exactly this, four members voting and then the
-   * whole team going quiescent with no poll ever closed. This notice states
-   * only the objective fact that every eligible member has now cast — never
-   * that anyone should close it — so the runtime stays rule-agnostic about
-   * when a poll's tally is meant to be final.
-   *
-   * `eligible`/`missing` are computed from `runnable()`, which changes on
-   * every finish or error — not only on a cast. A poll can therefore become
-   * fully cast without anyone casting: the last outstanding voter simply
-   * finishes or errors instead. Every terminal transition re-runs this check
-   * for every still-open poll (see `executeCommand`'s finish branch and
-   * `markErrored`), not just `castVote`, or a voter who cast early could
-   * wait forever on a notice that never fires.
-   */
-  private maybeAnnounceFullyCast(pollId: string, votes: ReadonlyMap<MemberId, string>): void {
-    if (this.fullyCastPolls.has(pollId) || votes.size === 0) return;
-    const result = this.tallyPoll(pollId, votes);
-    if (result.missing.length !== 0) return;
-    this.fullyCastPolls.add(pollId);
+    if (this.polls.has(pollId)) throw new Error(`poll already open: ${pollId}`);
+    if (this.claims.get(pollId) !== from)
+      throw new Error(`must hold claim ${pollId} before opening that poll`);
+    if (typeof initiatorVotes !== "boolean") throw new Error("initiatorVotes must be boolean");
+    if (!Number.isInteger(maxReminders) || maxReminders < 0 || maxReminders > 3)
+      throw new Error("maxReminders must be an integer from 0 to 3");
+    if (onReminderExhausted !== "leave-missing" && onReminderExhausted !== "abstain")
+      throw new Error("onReminderExhausted must be leave-missing or abstain");
+    const eligible = new Set(
+      [...this.agents.keys()].filter((memberId) => initiatorVotes || memberId !== from),
+    );
+    if (eligible.size === 0) throw new Error("poll must have at least one eligible voter");
+    const poll: OpenPoll = {
+      explicit: true,
+      initiator: from,
+      initiatorVotes,
+      maxReminders,
+      onReminderExhausted,
+      eligible,
+      votes: new Map(),
+      abstained: new Set(),
+      autoAbstained: new Set(),
+      reminders: new Map(),
+    };
+    this.polls.set(pollId, poll);
+    this.record("poll.opened", from, undefined, {
+      pollId,
+      initiatorVotes,
+      maxReminders,
+      onReminderExhausted,
+      eligible: [...eligible],
+    });
+    this.emitActivity(from, "vote", `opened ${pollId}`, { kind: "public" }, [...eligible]);
     this.post(
       "runtime",
       { kind: "public" },
-      `POLL_FULLY_CAST pollId=${JSON.stringify(pollId)} voters=${JSON.stringify(result.eligible)}`,
-      "interrupt",
+      `POLL_OPENED pollId=${JSON.stringify(pollId)} initiator=${from} eligible=${JSON.stringify([...eligible])} maxReminders=${maxReminders} onReminderExhausted=${onReminderExhausted}`,
+      "passive",
       "system",
     );
   }
 
-  /**
-   * Re-evaluates every currently open poll's fully-cast status after a
-   * terminal transition (finish or error), since `runnable()` — and
-   * therefore `eligible`/`missing` — just changed for every poll, not only
-   * the one (if any) the transitioning member was part of.
-   */
+  private castVote(from: MemberId, pollId: string, choice: string): void {
+    if (!choice.trim()) throw new Error("vote choice must not be empty");
+    const poll = this.requireOpenPollForResponse(from, pollId);
+    poll.abstained.delete(from);
+    poll.autoAbstained.delete(from);
+    poll.votes.set(from, choice);
+    this.record("poll.cast", from, undefined, { pollId, choice });
+    this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    this.maybeAnnouncePollReady(pollId, poll);
+  }
+
+  private abstainVote(from: MemberId, pollId: string): void {
+    const poll = this.requireOpenPollForResponse(from, pollId);
+    poll.votes.delete(from);
+    poll.autoAbstained.delete(from);
+    poll.abstained.add(from);
+    this.record("poll.abstained", from, undefined, { pollId, automatic: false });
+    this.emitActivity(from, "vote", `abstained on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    this.maybeAnnouncePollReady(pollId, poll);
+  }
+
+  private requireOpenPollForResponse(from: MemberId, pollId: string): OpenPoll {
+    if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
+    let poll = this.polls.get(pollId);
+    // Backward-compatible implicit opening: existing callers that claimed an
+    // id and cast directly keep the former all-member electorate and no
+    // reminder policy. New callers should use team_vote_open.
+    if (!poll) {
+      if (!this.claims.has(pollId))
+        throw new Error(`must claim ${pollId} before opening a new poll with that id`);
+      poll = {
+        explicit: false,
+        initiator: this.claims.get(pollId)!,
+        initiatorVotes: true,
+        maxReminders: 0,
+        onReminderExhausted: "leave-missing",
+        eligible: new Set(this.agents.keys()),
+        votes: new Map(),
+        abstained: new Set(),
+        autoAbstained: new Set(),
+        reminders: new Map(),
+      };
+      this.polls.set(pollId, poll);
+    }
+    if (!poll.eligible.has(from))
+      throw new Error(`member ${from} is not eligible to respond to poll ${pollId}`);
+    return poll;
+  }
+
+  private maybeAnnouncePollReady(pollId: string, poll: OpenPoll): void {
+    if (this.readyPolls.has(pollId) || poll.votes.size + poll.abstained.size === 0) return;
+    const result = this.tallyPoll(pollId, poll);
+    if (result.missing.length !== 0) return;
+    this.readyPolls.add(pollId);
+    const details = `pollId=${JSON.stringify(pollId)} voters=${JSON.stringify(Object.keys(result.votes))} abstained=${JSON.stringify(result.abstained)} autoAbstained=${JSON.stringify(result.autoAbstained)}`;
+    if (poll.explicit && this.deliverable(poll.initiator))
+      this.post(
+        "runtime",
+        { kind: "direct", memberId: poll.initiator },
+        `POLL_READY_TO_CLOSE ${details}; call team_vote_close`,
+        "interrupt",
+        "system",
+      );
+    else
+      this.post(
+        "runtime",
+        { kind: "public" },
+        `POLL_FULLY_CAST ${details}`,
+        "interrupt",
+        "system",
+      );
+  }
+
   private recheckOpenPollsAfterTerminalTransition(): void {
-    for (const [pollId, votes] of this.polls) this.maybeAnnounceFullyCast(pollId, votes);
+    for (const [pollId, poll] of this.polls) this.maybeAnnouncePollReady(pollId, poll);
+  }
+
+  private advanceOpenPollsAtQuiescence(): boolean {
+    let changed = false;
+    for (const [pollId, poll] of this.polls) {
+      if (!poll.explicit || this.readyPolls.has(pollId)) continue;
+      const missing = this.tallyPoll(pollId, poll).missing;
+      for (const memberId of missing) {
+        if (!this.deliverable(memberId) || this.blocked.has(memberId)) continue;
+        const reminders = poll.reminders.get(memberId) ?? 0;
+        if (reminders < poll.maxReminders) {
+          const next = reminders + 1;
+          poll.reminders.set(memberId, next);
+          this.record("poll.reminded", memberId, undefined, { pollId, attempt: next });
+          this.post(
+            "runtime",
+            { kind: "direct", memberId },
+            `POLL_REMINDER pollId=${JSON.stringify(pollId)} attempt=${next}/${poll.maxReminders}; call team_vote_cast or team_vote_abstain`,
+            "interrupt",
+            "system",
+          );
+          changed = true;
+        } else if (poll.onReminderExhausted === "abstain") {
+          poll.abstained.add(memberId);
+          poll.autoAbstained.add(memberId);
+          this.record("poll.abstained", memberId, undefined, { pollId, automatic: true });
+          this.emitActivity(
+            "runtime",
+            "vote",
+            `${memberId} auto-abstained on ${pollId} after ${poll.maxReminders} reminder${poll.maxReminders === 1 ? "" : "s"}`,
+            { kind: "direct", memberId },
+            [memberId],
+          );
+          changed = true;
+        }
+      }
+      this.maybeAnnouncePollReady(pollId, poll);
+    }
+    return changed || this.ready.size > 0;
   }
 
   /**
@@ -1102,19 +1229,22 @@ export class TeamRuntime {
     const existing = this.closedPolls.get(pollId);
     if (existing)
       throw new Error(`poll already closed: ${pollId} — ${describePollOutcome(existing.outcome)}`);
-    // A poll exists only once a vote has been cast into it. Fabricating an
-    // empty tally here (`?? new Map()`) would let any member permanently
-    // close a guessable pollId as no-votes without ever holding the claim
-    // castVote requires for a new id — bypassing that namespace reservation
-    // entirely. A nonexistent poll bounces like any other bad reference.
-    const votes = this.polls.get(pollId);
-    if (!votes) throw new Error(`no such poll: ${pollId} — no votes have been cast under that id`);
-    const result = this.tallyPoll(pollId, votes);
+    // A nonexistent poll bounces like any other bad reference. An explicitly
+    // opened but wholly unanswered poll also cannot be frozen as a vacuous
+    // no-votes outcome; at least one vote or abstention must exist.
+    const poll = this.polls.get(pollId);
+    if (!poll) throw new Error(`no such poll: ${pollId}`);
+    if (poll.votes.size + poll.abstained.size === 0)
+      throw new Error(`poll ${pollId} has no responses and cannot be closed`);
+    const result = this.tallyPoll(pollId, poll);
     this.closedPolls.set(pollId, result);
     this.polls.delete(pollId);
+    this.readyPolls.delete(pollId);
     this.record("poll.closed", from, undefined, {
       pollId,
       tally: result.tally,
+      abstained: result.abstained,
+      autoAbstained: result.autoAbstained,
       missing: result.missing,
       outcome: result.outcome,
     });
@@ -1128,21 +1258,20 @@ export class TeamRuntime {
     this.post(
       "runtime",
       { kind: "public" },
-      `POLL_CLOSED pollId=${JSON.stringify(pollId)} tally=${JSON.stringify(result.tally)} missing=${JSON.stringify(result.missing)} outcome=${JSON.stringify(result.outcome)}`,
+      `POLL_CLOSED pollId=${JSON.stringify(pollId)} tally=${JSON.stringify(result.tally)} abstained=${JSON.stringify(result.abstained)} autoAbstained=${JSON.stringify(result.autoAbstained)} missing=${JSON.stringify(result.missing)} outcome=${JSON.stringify(result.outcome)}`,
       "interrupt",
       "system",
     );
   }
 
-  private tallyPoll(pollId: string, votes: ReadonlyMap<MemberId, string>): PollResult {
+  private tallyPoll(pollId: string, poll: OpenPoll): PollResult {
     const tally: Record<string, number> = {};
-    for (const choice of votes.values()) tally[choice] = (tally[choice] ?? 0) + 1;
-    const castIds = new Set(votes.keys());
-    // Blocked members stay in the electorate: blocking is a pause, not a
-    // departure, so the poll keeps waiting for them (and shows them missing)
-    // instead of silently shrinking around a member who will resume.
-    const eligible = [...this.agents.keys()].filter((id) => castIds.has(id) || this.deliverable(id));
-    const missing = eligible.filter((id) => !castIds.has(id));
+    for (const choice of poll.votes.values()) tally[choice] = (tally[choice] ?? 0) + 1;
+    const responded = new Set([...poll.votes.keys(), ...poll.abstained]);
+    // Terminal non-responders leave the quorum; blocked members remain
+    // eligible because blocking is a resumable pause rather than departure.
+    const eligible = [...poll.eligible].filter((id) => responded.has(id) || this.deliverable(id));
+    const missing = eligible.filter((id) => !responded.has(id));
     const entries = Object.entries(tally);
     const outcome: PollOutcome = !entries.length
       ? { kind: "no-votes" }
@@ -1156,7 +1285,9 @@ export class TeamRuntime {
     return Object.freeze({
       pollId,
       tally: Object.freeze(tally),
-      votes: Object.freeze(Object.fromEntries(votes)),
+      votes: Object.freeze(Object.fromEntries(poll.votes)),
+      abstained: Object.freeze([...poll.abstained]),
+      autoAbstained: Object.freeze([...poll.autoAbstained]),
       eligible: Object.freeze(eligible),
       missing: Object.freeze(missing),
       outcome,
@@ -1300,9 +1431,16 @@ export class TeamRuntime {
           .map((group) => Object.freeze({ id: group.id, name: group.name, members: group.members })),
       ),
       polls: Object.freeze(
-        [...this.polls.entries()].map(([pollId, votes]) => {
-          const result = this.tallyPoll(pollId, votes);
-          return Object.freeze({ pollId, tally: result.tally, missing: result.missing });
+        [...this.polls.entries()].map(([pollId, poll]) => {
+          const result = this.tallyPoll(pollId, poll);
+          return Object.freeze({
+            pollId,
+            initiator: poll.initiator,
+            tally: result.tally,
+            abstained: result.abstained,
+            autoAbstained: result.autoAbstained,
+            missing: result.missing,
+          });
         }),
       ),
     });
