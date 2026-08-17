@@ -1,6 +1,8 @@
 # @geminixiang/pi-gpt-image
 
-Generate and edit images in [Pi](https://pi.dev) with the native Codex `image_generation` hosted tool, backed by **gpt-image-2**. The extension reuses Pi's existing `openai-codex` OAuth login—no API key is needed—and works regardless of the provider selected for the current conversation.
+Generate and edit images in [Pi](https://pi.dev) through the active GPT provider's image API, backed by the provider's hosted image-generation capability. Authentication, headers, and endpoint selection come from Pi's active provider configuration—no separate API key or hard-coded `openai-codex` provider is required.
+
+The active model must be GPT 5.5 or newer, including `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. For example, when Pi is using `agent-model/gpt-5.6-sol`, `gpt_image` calls the configured `agent-model` endpoint at `/v1/images/generations` with `agent-model` authentication. Providers using a native Responses API instead receive the `image_generation` hosted-tool request. An explicit `model` override is resolved under the same active provider.
 
 ## Install
 
@@ -8,49 +10,29 @@ Generate and edit images in [Pi](https://pi.dev) with the native Codex `image_ge
 pi install npm:@geminixiang/pi-gpt-image
 ```
 
-Log in with `/login` and select **ChatGPT Plus/Pro (Codex)** if Pi does not already have `openai-codex` credentials.
+Use Pi with a provider that exposes GPT 5.5+ and supports the Responses `image_generation` hosted tool. The extension reuses that provider's configured authentication.
 
-Ask Pi to generate an image naturally, or explicitly request the `gpt_image` tool. It can edit either up to five local images (`referencedImagePaths`) or the most recent one to five conversation images (`numLastImagesToInclude`). Those input modes are mutually exclusive.
+It can edit either up to five local images (`referencedImagePaths`) or the most recent one to five conversation images (`numLastImagesToInclude`) when the active provider uses the native Responses API. The normalized `/images/generations` API currently supports generation only. Reference-input modes are mutually exclusive.
 
 ## Tool options
 
 - `prompt` (required): detailed generation or editing instructions
-- `size`: `1024x1024` (default), `1024x1536`, or `1536x1024`
 - `outputFormat`: `png` (default), `jpeg`, or `webp`
-- `model`: Codex routing model; defaults to `gpt-5.5` (the hosted image model remains gpt-image-2)
-- `save`: `none`, `project`, `global` (default), or `custom`
-- `saveDir`: directory for `custom`; relative paths resolve from the project
-- `referencedImagePaths`: up to five local PNG, JPEG, or WebP files; an optional leading `@` is accepted
-- `numLastImagesToInclude`: include one to five recent conversation images
+- `model`: optional GPT 5.5+ model override resolved under the active provider. By default, it uses the active model. The hosted image model remains gpt-image-2.
+- `referencedImagePaths`: up to five local PNG, JPEG, or WebP paths for Responses providers; relative paths resolve from the current working directory
+- `numLastImagesToInclude`: include one to five recent conversation images for Responses providers
 
-A valid generated image is always returned inline. If saving fails, the result includes a warning instead of discarding the image.
+Every successful generation is returned inline and written to:
 
-## Configuration
-
-Global config: `~/.pi/agent/extensions/gpt-image.json`
-
-Project config: `.pi/extensions/gpt-image.json`
-
-Project config is read only when Pi reports the project as trusted. It overlays global config:
-
-```json
-{
-  "save": "global",
-  "saveDir": "~/Pictures/generated",
-  "model": "gpt-5.5"
-}
+```text
+~/.pi/agent/generated-images/<session-id>/<image-call-id-or-uuid>.<ext>
 ```
 
-Environment overrides:
-
-- `PI_GPT_IMAGE_SAVE_MODE`
-- `PI_GPT_IMAGE_SAVE_DIR`
-
-Save locations are grouped by sanitized session ID. `project` writes under `.pi/generated-images/`; `global` writes under `~/.pi/agent/generated-images/`; `none` only returns the inline image.
+The provider image-call ID is used when available. Otherwise the extension generates a UUID, so successive images never overwrite one another.
 
 ## Security and privacy
 
-The extension sends prompts and selected reference images to `https://chatgpt.com/backend-api/codex/responses`. It validates returned base64 and image magic bytes before returning or writing data. It does not collect telemetry or log OAuth credentials.
+The extension sends prompts and selected reference images to the active model's configured image endpoint. It validates returned base64 and image magic bytes before returning or writing data. It does not collect telemetry or log provider credentials.
 
 ## Development
 

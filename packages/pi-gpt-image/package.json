@@ -1,7 +1,7 @@
 {
   "name": "@geminixiang/pi-gpt-image",
   "version": "0.1.0",
-  "description": "Generate and edit images in Pi with gpt-image-2 through Codex OAuth",
+  "description": "Generate and edit images through the active GPT provider's hosted image tool",
   "keywords": [
     "codex",
     "gpt-image-2",

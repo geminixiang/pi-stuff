@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import extension, {
   abortableDelay,
+  buildImageGenerationsBody,
   buildRequestBody,
   decodeImageData,
-  loadConfig,
+  imageFileName,
   parseCodexSse,
+  parseImageGenerationJson,
+  resolveImageUrl,
   resolveInputImages,
-  sanitizePathPart,
+  resolveRoutingModel,
+  usesNativeResponses,
 } from "../extensions/index.ts";
 
 const PNG = Buffer.from(
@@ -18,11 +22,6 @@ const PNG = Buffer.from(
   "base64",
 );
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
-
-async function writeJson(path: string, value: unknown) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(value));
-}
 
 function jwt() {
   const payload = Buffer.from(
@@ -52,7 +51,18 @@ function sse(image = PNG.toString("base64"), lineEnd = "\n") {
   );
 }
 
-function createTool() {
+function imageJson(image = PNG.toString("base64")) {
+  return new Response(
+    JSON.stringify({
+      model: "gpt-5.6-sol",
+      data: [{ b64_json: image }],
+      usage: { total_tokens: 1 },
+    }),
+    { headers: { "content-type": "application/json" } },
+  );
+}
+
+function createTool(agentDir = join(tmpdir(), "pi-gpt-image-tests")) {
   let tool:
     | {
         execute: (...args: unknown[]) => Promise<{
@@ -61,47 +71,55 @@ function createTool() {
         }>;
       }
     | undefined;
-  extension({
-    registerTool(value: unknown) {
-      tool = value as typeof tool;
-    },
-  } as never);
+  extension(
+    {
+      registerTool(value: unknown) {
+        tool = value as typeof tool;
+      },
+    } as never,
+    agentDir,
+  );
   assert.ok(tool);
   return tool;
 }
 
 function context(cwd: string, messages: unknown[] = []) {
+  let authCalls = 0;
   return {
     cwd,
     isProjectTrusted: () => false,
-    modelRegistry: { getApiKeyForProvider: async () => jwt() },
+    model: {
+      provider: "agent-model",
+      id: "gpt-5.6-sol",
+      api: "openai-completions",
+      baseUrl: "http://localhost:8080/v1",
+    },
+    modelRegistry: {
+      find: (provider: string, id: string) => ({
+        provider,
+        id,
+        api: "openai-codex-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      }),
+      getApiKeyAndHeaders: async () => {
+        authCalls++;
+        return {
+          ok: true as const,
+          apiKey: jwt(),
+          headers: { "x-refreshed-auth": "yes" },
+        };
+      },
+      getApiKeyForProvider: async () => {
+        throw new Error("provider-level raw token lookup must not be used");
+      },
+    },
+    getAuthCalls: () => authCalls,
     sessionManager: {
       getSessionId: () => "../session:1",
       getBranch: () => messages.map((message) => ({ type: "message", message })),
     },
   };
 }
-
-test("project configuration overlays global configuration only when trusted", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "gpt-image-config-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await writeJson(join(root, "agent/extensions/gpt-image.json"), {
-    save: "global",
-    model: "global-model",
-  });
-  await writeJson(join(root, "project/.pi/extensions/gpt-image.json"), {
-    save: "none",
-    model: "project-model",
-  });
-  assert.deepEqual(loadConfig(join(root, "project"), false, join(root, "agent")), {
-    save: "global",
-    model: "global-model",
-  });
-  assert.deepEqual(loadConfig(join(root, "project"), true, join(root, "agent")), {
-    save: "none",
-    model: "project-model",
-  });
-});
 
 test("strict decoding validates base64 and requested magic bytes", () => {
   assert.deepEqual(decodeImageData(PNG.toString("base64"), "png"), PNG);
@@ -117,7 +135,7 @@ test("input selectors are exclusive and local images preserve order", async (t) 
   await writeFile(join(cwd, "one.png"), PNG);
   await writeFile(join(cwd, "two.jpg"), JPEG);
   const images = await resolveInputImages(
-    { prompt: "edit", referencedImagePaths: ["one.png", "@two.jpg"] },
+    { prompt: "edit", referencedImagePaths: ["one.png", "two.jpg"] },
     cwd,
     [],
   );
@@ -135,13 +153,63 @@ test("input selectors are exclusive and local images preserve order", async (t) 
   );
 });
 
+test("routing model follows eligible active GPT variants and otherwise falls back", () => {
+  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.5"), "gpt-5.5");
+  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-sol"), "gpt-5.6-sol");
+  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-terra"), "gpt-5.6-terra");
+  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-luna"), "gpt-5.6-luna");
+  assert.throws(
+    () => resolveRoutingModel(undefined, undefined, "claude-opus-4-6"),
+    /GPT 5\.5 or newer/,
+  );
+  assert.throws(() => resolveRoutingModel(undefined, undefined, "gpt-5.4"), /GPT 5\.5 or newer/);
+  assert.equal(resolveRoutingModel(undefined, "gpt-5.6-terra", "gpt-5.6-sol"), "gpt-5.6-terra");
+  assert.equal(resolveRoutingModel("gpt-5.6-luna", "gpt-5.5", "gpt-5.6-sol"), "gpt-5.6-luna");
+});
+
+test("provider API selects its real image endpoint and request contract", async () => {
+  const gatewayModel = {
+    provider: "agent-model",
+    id: "gpt-5.6-sol",
+    api: "openai-completions",
+    baseUrl: "http://localhost:8080/v1",
+  } as never;
+  assert.equal(resolveImageUrl(gatewayModel), "http://localhost:8080/v1/images/generations");
+  assert.equal(usesNativeResponses(gatewayModel), false);
+  assert.deepEqual(buildImageGenerationsBody({ prompt: "draw" }, "gpt-5.6-sol"), {
+    model: "gpt-5.6-sol",
+    prompt: "draw",
+    response_format: "b64_json",
+    output_format: "png",
+  });
+
+  const codexModel = {
+    provider: "openai-codex",
+    id: "gpt-5.6-sol",
+    api: "openai-codex-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+  } as never;
+  assert.equal(resolveImageUrl(codexModel), "https://chatgpt.com/backend-api/codex/responses");
+  assert.equal(usesNativeResponses(codexModel), true);
+
+  const parsed = await parseImageGenerationJson(
+    new Response(
+      JSON.stringify({
+        model: "gpt-5.6-sol",
+        data: [{ b64_json: PNG.toString("base64"), revised_prompt: "revised" }],
+        usage: { total_tokens: 1 },
+      }),
+    ),
+  );
+  assert.equal(parsed.image?.result, PNG.toString("base64"));
+  assert.equal(parsed.image?.revisedPrompt, "revised");
+});
+
 test("request uses configurable routing model and native gpt-image-2 options", () => {
-  const body = buildRequestBody({ prompt: "draw" }, "gpt-5.5", "webp", "1024x1536", "session");
+  const body = buildRequestBody({ prompt: "draw" }, "gpt-5.5", "webp", "session");
   assert.equal(body.model, "gpt-5.5");
-  assert.deepEqual(body.tools, [
-    { type: "image_generation", model: "gpt-image-2", size: "1024x1536", output_format: "webp" },
-  ]);
-  assert.deepEqual(body.tool_choice, { type: "image_generation" });
+  assert.deepEqual(body.tools, [{ type: "image_generation", output_format: "webp" }]);
+  assert.equal(body.tool_choice, "auto");
 });
 
 test("SSE parser handles CRLF and chunk boundaries", async () => {
@@ -165,7 +233,7 @@ test("abortable backoff exits promptly", async () => {
   await assert.rejects(pending, /aborted/);
 });
 
-test("tool works under any active provider and sends Codex OAuth request", async (t) => {
+test("tool uses the active provider endpoint and refreshed provider auth", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "gpt-image-tool-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const originalFetch = globalThis.fetch;
@@ -174,45 +242,79 @@ test("tool works under any active provider and sends Codex OAuth request", async
   });
   let request: RequestInit | undefined;
   globalThis.fetch = async (url, init) => {
-    assert.equal(url, "https://chatgpt.com/backend-api/codex/responses");
+    assert.equal(url, "http://localhost:8080/v1/images/generations");
     request = init;
-    return sse();
+    return imageJson();
   };
+  const toolContext = context(cwd);
   const result = await createTool().execute(
     "call",
-    { prompt: "draw", save: "none" },
+    { prompt: "draw" },
     undefined,
     undefined,
-    {
-      ...context(cwd),
-      model: { provider: "anthropic", id: "claude" },
-    },
+    toolContext,
   );
-  assert.match(String(new Headers(request?.headers).get("authorization")), /^Bearer /);
-  assert.equal(result.details.model, "gpt-5.5");
+  const headers = new Headers(request?.headers);
+  assert.match(String(headers.get("authorization")), /^Bearer /);
+  assert.equal(headers.get("x-refreshed-auth"), "yes");
+  assert.equal(toolContext.getAuthCalls(), 1);
+  assert.equal(result.details.model, "gpt-5.6-sol");
+  assert.equal(result.details.provider, "agent-model");
   assert.equal(result.content.find((part) => part.type === "image")?.data, PNG.toString("base64"));
 });
 
-test("disk failure retains inline image and sanitized attempted path", async (t) => {
-  const cwd = await mkdtemp(join(tmpdir(), "gpt-image-save-"));
+test("tool follows an eligible active GPT model regardless of its provider label", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "gpt-image-active-model-"));
   t.after(() => rm(cwd, { recursive: true, force: true }));
-  const blocker = join(cwd, "blocker");
-  await writeFile(blocker, "file");
   const originalFetch = globalThis.fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
-  globalThis.fetch = async () => sse();
+  let body: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_url, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return imageJson();
+  };
+  const result = await createTool().execute("call", { prompt: "draw" }, undefined, undefined, {
+    ...context(cwd),
+    model: {
+      provider: "custom-gpt-subscription",
+      id: "gpt-5.6-sol",
+      api: "openai-completions",
+      baseUrl: "https://subscription.example/v1",
+    },
+  });
+  assert.equal(body?.model, "gpt-5.6-sol");
+  assert.equal(result.details.model, "gpt-5.6-sol");
+});
+
+test("normalized image providers ignore the recent-image placeholder for fresh generation", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "gpt-image-placeholder-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => imageJson();
   const result = await createTool().execute(
     "call",
-    { prompt: "draw", save: "custom", saveDir: blocker },
+    {
+      prompt: "draw a cow",
+      referencedImagePaths: [],
+      numLastImagesToInclude: 1,
+    },
     undefined,
     undefined,
     context(cwd),
   );
-  assert.match(String(result.details.saveWarning), /persistence failed/);
-  assert.doesNotMatch(String(result.details.attemptedPath), /\.\.\/unsafe/);
+  assert.equal(result.details.inputImageCount, 0);
   assert.equal(result.content.find((part) => part.type === "image")?.data, PNG.toString("base64"));
-  assert.equal(sanitizePathPart("../../unsafe", "fallback"), "unsafe");
-  await assert.rejects(readFile(String(result.details.attemptedPath)));
+});
+
+test("missing image IDs receive unique UUID filenames", () => {
+  const first = imageFileName(undefined, "png");
+  const second = imageFileName(undefined, "png");
+  assert.match(first, /^[0-9a-f-]{36}\.png$/);
+  assert.notEqual(first, second);
+  assert.equal(imageFileName("../../unsafe", "webp"), "unsafe.webp");
 });

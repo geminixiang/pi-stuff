@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type Model } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
   getAgentDir,
@@ -10,33 +9,24 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 
-const PROVIDER = "openai-codex";
-const DEFAULT_MODEL = "gpt-5.5";
+const MINIMUM_GPT_MAJOR = 5;
+const MINIMUM_GPT_MINOR = 5;
 const IMAGE_MODEL = "gpt-image-2";
-const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const AUTH_CLAIM = "https://api.openai.com/auth";
 const MAX_IMAGES = 5;
 const MAX_RETRIES = 3;
 const MAX_DELAY_MS = 30_000;
 
-const SAVE_MODES = ["none", "project", "global", "custom"] as const;
 const OUTPUT_FORMATS = ["png", "jpeg", "webp"] as const;
-const IMAGE_SIZES = ["1024x1024", "1024x1536", "1536x1024"] as const;
-type SaveMode = (typeof SAVE_MODES)[number];
 type OutputFormat = (typeof OUTPUT_FORMATS)[number];
-type ImageSize = (typeof IMAGE_SIZES)[number];
 
 const parameters = Type.Object({
   prompt: Type.String({ description: "Detailed image generation or editing instructions." }),
-  size: Type.Optional(StringEnum(IMAGE_SIZES, { description: "Requested output dimensions." })),
   outputFormat: Type.Optional(StringEnum(OUTPUT_FORMATS)),
   model: Type.Optional(
-    Type.String({ description: `Codex routing model. Defaults to ${DEFAULT_MODEL}.` }),
-  ),
-  save: Type.Optional(StringEnum(SAVE_MODES)),
-  saveDir: Type.Optional(
     Type.String({
-      description: "Directory used with save=custom; relative paths resolve from the project.",
+      description:
+        "GPT 5.5+ model ID. Defaults to the active model; an override must exist under the active provider.",
     }),
   ),
   referencedImagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: MAX_IMAGES })),
@@ -44,10 +34,74 @@ const parameters = Type.Object({
 });
 type GptImageParams = Static<typeof parameters>;
 
-interface GptImageConfig {
-  save?: SaveMode;
-  saveDir?: string;
-  model?: string;
+export function isImageCapableGptModel(modelId: string | undefined): boolean {
+  if (!modelId) return false;
+  const match = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/i.exec(modelId.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > MINIMUM_GPT_MAJOR || (major === MINIMUM_GPT_MAJOR && minor >= MINIMUM_GPT_MINOR);
+}
+
+export function resolveRoutingModel(
+  requestedModel: string | undefined,
+  configuredModel: string | undefined,
+  activeModelId: string | undefined,
+): string {
+  const model = requestedModel?.trim() || configuredModel?.trim() || activeModelId?.trim();
+  if (!isImageCapableGptModel(model)) {
+    throw new Error(
+      "gpt_image requires the active or explicitly selected model to be GPT 5.5 or newer.",
+    );
+  }
+  return model as string;
+}
+
+export function usesNativeResponses(model: Model<any>): boolean {
+  return ["openai-responses", "azure-openai-responses", "openai-codex-responses"].includes(
+    model.api,
+  );
+}
+
+export function resolveImageUrl(model: Model<any>): string {
+  const baseUrl = model.baseUrl.replace(/\/+$/, "");
+  if (usesNativeResponses(model)) {
+    if (model.api === "openai-codex-responses") {
+      if (baseUrl.endsWith("/codex/responses")) return baseUrl;
+      if (baseUrl.endsWith("/codex")) return `${baseUrl}/responses`;
+      return `${baseUrl}/codex/responses`;
+    }
+    return baseUrl.endsWith("/responses") ? baseUrl : `${baseUrl}/responses`;
+  }
+  return baseUrl.endsWith("/images/generations") ? baseUrl : `${baseUrl}/images/generations`;
+}
+
+function hasHeader(headers: Headers, name: string): boolean {
+  return [...headers.keys()].some((key) => key.toLowerCase() === name.toLowerCase());
+}
+
+export async function buildRequestHeaders(
+  model: Model<any>,
+  getAuth: () => Promise<
+    { ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }
+  >,
+): Promise<Headers> {
+  const auth = await getAuth();
+  if (!auth.ok) throw new Error(auth.error);
+  const headers = new Headers(auth.headers);
+  headers.set("content-type", "application/json");
+  headers.set("accept", "text/event-stream, application/json");
+  if (auth.apiKey && !hasHeader(headers, "authorization")) {
+    headers.set("authorization", `Bearer ${auth.apiKey}`);
+  }
+  if (model.api === "openai-codex-responses") {
+    headers.set("OpenAI-Beta", "responses=experimental");
+    headers.set("originator", "pi");
+    if (auth.apiKey && !hasHeader(headers, "chatgpt-account-id")) {
+      headers.set("chatgpt-account-id", decodeJwtAccountId(auth.apiKey));
+    }
+  }
+  return headers;
 }
 interface InputImage {
   data: string;
@@ -66,30 +120,7 @@ interface ParsedResponse {
   usage?: unknown;
 }
 
-function readConfig(path: string): GptImageConfig {
-  try {
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as GptImageConfig)
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-export function loadConfig(
-  cwd: string,
-  trusted: boolean,
-  agentDir = getAgentDir(),
-): GptImageConfig {
-  const global = readConfig(join(agentDir, "extensions", "gpt-image.json"));
-  if (!trusted) return global;
-  return { ...global, ...readConfig(join(cwd, ".pi", "extensions", "gpt-image.json")) };
-}
-
-export function resolveUnderCwd(cwd: string, value: string, home = homedir()): string {
-  if (value === "~") return home;
-  if (value.startsWith("~/")) return resolve(home, value.slice(2));
+export function resolveInputPath(cwd: string, value: string): string {
   return isAbsolute(value) ? value : resolve(cwd, value);
 }
 
@@ -170,7 +201,7 @@ export async function resolveInputImages(
   if (paths.length) {
     return Promise.all(
       paths.map(async (path) => {
-        const absolute = resolveUnderCwd(cwd, path.startsWith("@") ? path.slice(1) : path);
+        const absolute = resolveInputPath(cwd, path);
         let bytes: Buffer;
         try {
           bytes = await readFile(absolute);
@@ -199,11 +230,22 @@ export async function resolveInputImages(
   return [];
 }
 
+export function buildImageGenerationsBody(
+  params: GptImageParams,
+  model: string,
+): Record<string, unknown> {
+  return {
+    model,
+    prompt: params.prompt,
+    response_format: "b64_json",
+    output_format: params.outputFormat ?? "png",
+  };
+}
+
 export function buildRequestBody(
   params: GptImageParams,
   model: string,
   format: OutputFormat,
-  size: ImageSize,
   sessionId: string,
   images: InputImage[] = [],
 ) {
@@ -226,10 +268,32 @@ export function buildRequestBody(
         ],
       },
     ],
-    tools: [{ type: "image_generation", model: IMAGE_MODEL, size, output_format: format }],
-    tool_choice: { type: "image_generation" },
+    tools: [{ type: "image_generation", output_format: format }],
+    tool_choice: "auto",
     parallel_tool_calls: false,
     text: { verbosity: "low" },
+  };
+}
+
+export async function parseImageGenerationJson(response: Response): Promise<ParsedResponse> {
+  const payload = (await response.json()) as {
+    model?: unknown;
+    data?: Array<{ b64_json?: unknown; revised_prompt?: unknown }>;
+    usage?: unknown;
+  };
+  const image = payload.data?.find((item) => typeof item.b64_json === "string");
+  if (!image || typeof image.b64_json !== "string") {
+    throw new Error("The active provider returned no base64 image data.");
+  }
+  return {
+    image: {
+      id: "image_generation",
+      status: "completed",
+      result: image.b64_json,
+      revisedPrompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
+    },
+    text: [],
+    usage: payload.usage,
   };
 }
 
@@ -363,34 +427,30 @@ function decodeJwtAccountId(token: string): string {
 }
 
 async function requestImage(
+  url: string,
+  headers: Headers,
   body: unknown,
-  token: string,
-  accountId: string,
+  nativeResponses: boolean,
   signal?: AbortSignal,
 ): Promise<ParsedResponse> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (signal?.aborted) throw new Error("Image generation was aborted.");
     let response: Response;
     try {
-      response = await fetch(RESPONSES_URL, {
+      response = await fetch(url, {
         method: "POST",
         signal,
         body: JSON.stringify(body),
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "chatgpt-account-id": accountId,
-          originator: "pi",
-          "OpenAI-Beta": "responses=experimental",
-          accept: "text/event-stream",
-          "content-type": "application/json",
-        },
+        headers,
       });
     } catch (error) {
       if (signal?.aborted || attempt === MAX_RETRIES) throw error;
       await abortableDelay(Math.min(1000 * 2 ** attempt, MAX_DELAY_MS), signal);
       continue;
     }
-    if (response.ok) return parseCodexSse(response, signal);
+    if (response.ok) {
+      return nativeResponses ? parseCodexSse(response, signal) : parseImageGenerationJson(response);
+    }
     const text = await response.text();
     if (attempt === MAX_RETRIES || ![429, 500, 502, 503, 504].includes(response.status)) {
       throw new Error(`Codex image request failed (${response.status}): ${text.slice(0, 1000)}`);
@@ -403,123 +463,107 @@ async function requestImage(
   throw new Error("Codex image request failed after retries.");
 }
 
-function outputDirectory(
-  mode: SaveMode,
-  cwd: string,
-  session: string,
-  custom?: string,
-): string | undefined {
-  if (mode === "none") return undefined;
-  if (mode === "project") return join(cwd, ".pi", "generated-images", session);
-  if (mode === "global") return join(getAgentDir(), "generated-images", session);
-  if (!custom?.trim()) throw new Error("save=custom requires saveDir or PI_GPT_IMAGE_SAVE_DIR.");
-  return join(resolveUnderCwd(cwd, custom), session);
+function outputDirectory(session: string, agentDir: string): string {
+  return join(agentDir, "generated-images", session);
 }
 
-export default function gptImageExtension(pi: ExtensionAPI) {
+export function imageFileName(imageId: string | undefined, extension: string): string {
+  const safeId = imageId ? sanitizePathPart(imageId, "") : "";
+  return `${safeId || randomUUID()}.${extension}`;
+}
+
+export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentDir()) {
   pi.registerTool({
     name: "gpt_image",
     label: "GPT Image",
     description:
-      "Generate or edit an image with gpt-image-2 through Pi's existing openai-codex OAuth login. Supports up to five local or recent conversation reference images.",
-    promptSnippet: "Generate or edit bitmap images with the Codex native gpt-image-2 tool.",
+      "Generate or edit an image through the active GPT 5.5+ provider's Responses endpoint and native gpt-image-2 hosted tool. Uses the active provider's endpoint and authentication, including custom providers such as agent-model, and supports up to five local or recent conversation reference images.",
+    promptSnippet:
+      "Generate or edit bitmap images through the active GPT provider's hosted image tool.",
     promptGuidelines: [
       "Use gpt_image when the user asks to generate or edit a raster image.",
       "Do not invoke gpt_image without a clear image request because it consumes the user's Codex image quota.",
     ],
     parameters,
     executionMode: "parallel",
-    async execute(toolCallId, params: GptImageParams, signal, onUpdate, ctx) {
-      const trusted = typeof ctx.isProjectTrusted === "function" && ctx.isProjectTrusted();
-      const config = loadConfig(ctx.cwd, trusted);
-      const model = params.model || config.model || DEFAULT_MODEL;
+    async execute(_toolCallId, params: GptImageParams, signal, onUpdate, ctx) {
+      const requestedModel = resolveRoutingModel(params.model, undefined, ctx.model?.id);
+      const provider = ctx.model?.provider;
+      if (!provider) throw new Error("gpt_image requires an active GPT model.");
+      const model =
+        ctx.model?.id === requestedModel
+          ? ctx.model
+          : ctx.modelRegistry.find(provider, requestedModel);
+      if (!model) {
+        throw new Error(`Model ${provider}/${requestedModel} is not configured in Pi.`);
+      }
       const format = params.outputFormat ?? "png";
-      const size = params.size ?? "1024x1024";
-      const requestedMode = (params.save ||
-        process.env.PI_GPT_IMAGE_SAVE_MODE?.toLowerCase() ||
-        config.save ||
-        "global") as SaveMode;
-      if (!SAVE_MODES.includes(requestedMode))
-        throw new Error(`Invalid save mode: ${requestedMode}.`);
-      const token = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER);
-      if (!token)
-        throw new Error(
-          "Missing openai-codex credentials. Run /login and select ChatGPT Plus/Pro (Codex).",
-        );
-      const accountId = decodeJwtAccountId(token);
+      const headers = await buildRequestHeaders(model, () =>
+        ctx.modelRegistry.getApiKeyAndHeaders(model),
+      );
+      const endpoint = resolveImageUrl(model);
+      const nativeResponses = usesNativeResponses(model);
       const session = sanitizePathPart(ctx.sessionManager.getSessionId(), "session");
       const messages: unknown[] = [];
       for (const entry of ctx.sessionManager.getBranch()) {
         if (entry.type === "message") messages.push(entry.message);
         else if (entry.type === "custom_message") messages.push(entry);
       }
-      const images = await resolveInputImages(params, ctx.cwd, messages);
+      const images = nativeResponses
+        ? await resolveInputImages(params, ctx.cwd, messages)
+        : params.referencedImagePaths?.length
+          ? await resolveInputImages(params, ctx.cwd, messages)
+          : [];
+      if (images.length && !nativeResponses) {
+        throw new Error(
+          `${provider}/${model.id} exposes image generation through /images/generations, which does not accept reference images. Switch to a Responses provider to edit images.`,
+        );
+      }
       onUpdate?.({
         content: [
           {
             type: "text",
-            text: `Requesting ${size} ${images.length ? "edit" : "image"} through ${PROVIDER}/${model}...`,
+            text: `Requesting ${images.length ? "image edit" : "image generation"} through ${provider}/${model.id}...`,
           },
         ],
-        details: { model, size, format },
+        details: { provider, model: model.id, endpoint, format },
       });
-      const parsed = await requestImage(
-        buildRequestBody(params, model, format, size, session, images),
-        token,
-        accountId,
-        signal,
-      );
+      const requestBody = nativeResponses
+        ? buildRequestBody(params, model.id, format, session, images)
+        : buildImageGenerationsBody(params, model.id);
+      const parsed = await requestImage(endpoint, headers, requestBody, nativeResponses, signal);
       if (!parsed.image) {
         const text = parsed.text.join("").trim();
         throw new Error(text ? `Codex returned no image: ${text}` : "Codex returned no image.");
       }
-      const bytes = decodeImageData(parsed.image.result, format);
-      const custom = params.saveDir || process.env.PI_GPT_IMAGE_SAVE_DIR || config.saveDir;
-      const directory = outputDirectory(requestedMode, ctx.cwd, session, custom);
-      const extension = format === "jpeg" ? "jpg" : format;
-      let savedPath: string | undefined;
-      let attemptedPath: string | undefined;
-      let saveWarning: string | undefined;
-      if (directory) {
-        attemptedPath = join(
-          directory,
-          `${sanitizePathPart(parsed.image.id || toolCallId, "image_generation")}.${extension}`,
-        );
-        try {
-          await withFileMutationQueue(attemptedPath, async () => {
-            await mkdir(directory, { recursive: true });
-            await writeFile(attemptedPath as string, bytes);
-          });
-          savedPath = attemptedPath;
-        } catch (error) {
-          saveWarning = `Image generation succeeded, but disk persistence failed: ${error instanceof Error ? error.message : String(error)}`;
-        }
-      }
-      const mimeType = format === "jpeg" ? "image/jpeg" : `image/${format}`;
+      const bytes = decodeImageData(parsed.image.result);
+      const actualMimeType = magicMime(bytes) as string;
+      const actualFormat: OutputFormat =
+        actualMimeType === "image/jpeg" ? "jpeg" : actualMimeType === "image/webp" ? "webp" : "png";
+      const directory = outputDirectory(session, agentDir);
+      const extension = actualFormat === "jpeg" ? "jpg" : actualFormat;
+      const savedPath = join(directory, imageFileName(parsed.image.id, extension));
+      await withFileMutationQueue(savedPath, async () => {
+        await mkdir(directory, { recursive: true });
+        await writeFile(savedPath, bytes);
+      });
+      const mimeType = actualMimeType;
       return {
         content: [
           {
             type: "text",
-            text: [
-              `Generated ${size} image via ${PROVIDER}/${model} using ${IMAGE_MODEL}.`,
-              savedPath ? `Saved to ${savedPath}.` : "Image was not saved to disk.",
-              saveWarning ? `Warning: ${saveWarning}` : undefined,
-            ]
-              .filter(Boolean)
-              .join(" "),
+            text: `Generated image via ${provider}/${model.id} using ${IMAGE_MODEL}. Saved to ${savedPath}.`,
           },
           { type: "image", data: parsed.image.result, mimeType },
         ],
         details: {
-          provider: PROVIDER,
-          model,
+          provider,
+          model: model.id,
+          endpoint,
           backendImageModel: IMAGE_MODEL,
-          size,
-          outputFormat: format,
-          saveMode: requestedMode,
+          outputFormat: actualFormat,
+          requestedOutputFormat: format,
           savedPath,
-          attemptedPath,
-          saveWarning,
           inputImageCount: images.length,
           responseId: parsed.responseId,
           imageGenerationId: parsed.image.id,
