@@ -1,0 +1,55 @@
+{
+  "name": "@geminixiang/pi-texas-holdem",
+  "version": "0.1.0",
+  "description": "Play Texas Hold'em against bots or other machines on your network, right inside the Pi terminal UI",
+  "type": "module",
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-texas-holdem"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "poker",
+    "texas-holdem",
+    "terminal",
+    "game"
+  ],
+  "files": [
+    "extensions",
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "extensions/poker.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.20.6",
+    "typebox": "^1.0.52",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
