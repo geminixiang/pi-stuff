@@ -30,14 +30,18 @@ function jwt() {
   return `header.${payload}.signature`;
 }
 
-function sse(image = PNG.toString("base64"), lineEnd = "\n") {
+function sse(
+  image = PNG.toString("base64"),
+  lineEnd = "\n",
+  imageId: string | null = "../../unsafe",
+) {
   const events = [
     { type: "response.created", response: { id: "response-1" } },
     {
       type: "response.output_item.done",
       item: {
         type: "image_generation_call",
-        id: "../../unsafe",
+        ...(typeof imageId === "string" ? { id: imageId } : {}),
         status: "completed",
         result: image,
       },
@@ -85,6 +89,7 @@ function createTool(agentDir = join(tmpdir(), "pi-gpt-image-tests")) {
 
 function context(cwd: string, messages: unknown[] = []) {
   let authCalls = 0;
+  let branchCalls = 0;
   return {
     cwd,
     isProjectTrusted: () => false,
@@ -114,9 +119,13 @@ function context(cwd: string, messages: unknown[] = []) {
       },
     },
     getAuthCalls: () => authCalls,
+    getBranchCalls: () => branchCalls,
     sessionManager: {
       getSessionId: () => "../session:1",
-      getBranch: () => messages.map((message) => ({ type: "message", message })),
+      getBranch: () => {
+        branchCalls++;
+        return messages.map((message) => ({ type: "message", message }));
+      },
     },
   };
 }
@@ -153,18 +162,14 @@ test("input selectors are exclusive and local images preserve order", async (t) 
   );
 });
 
-test("routing model follows eligible active GPT variants and otherwise falls back", () => {
-  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.5"), "gpt-5.5");
-  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-sol"), "gpt-5.6-sol");
-  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-terra"), "gpt-5.6-terra");
-  assert.equal(resolveRoutingModel(undefined, undefined, "gpt-5.6-luna"), "gpt-5.6-luna");
-  assert.throws(
-    () => resolveRoutingModel(undefined, undefined, "claude-opus-4-6"),
-    /GPT 5\.5 or newer/,
-  );
-  assert.throws(() => resolveRoutingModel(undefined, undefined, "gpt-5.4"), /GPT 5\.5 or newer/);
-  assert.equal(resolveRoutingModel(undefined, "gpt-5.6-terra", "gpt-5.6-sol"), "gpt-5.6-terra");
-  assert.equal(resolveRoutingModel("gpt-5.6-luna", "gpt-5.5", "gpt-5.6-sol"), "gpt-5.6-luna");
+test("routing model follows eligible active GPT variants and otherwise rejects", () => {
+  assert.equal(resolveRoutingModel(undefined, "gpt-5.5"), "gpt-5.5");
+  assert.equal(resolveRoutingModel(undefined, "gpt-5.6-sol"), "gpt-5.6-sol");
+  assert.equal(resolveRoutingModel(undefined, "gpt-5.6-terra"), "gpt-5.6-terra");
+  assert.equal(resolveRoutingModel(undefined, "gpt-5.6-luna"), "gpt-5.6-luna");
+  assert.throws(() => resolveRoutingModel(undefined, "claude-opus-4-6"), /GPT 5\.5 or newer/);
+  assert.throws(() => resolveRoutingModel(undefined, "gpt-5.4"), /GPT 5\.5 or newer/);
+  assert.equal(resolveRoutingModel("gpt-5.6-luna", "gpt-5.6-sol"), "gpt-5.6-luna");
 });
 
 test("provider API selects its real image endpoint and request contract", async () => {
@@ -201,6 +206,7 @@ test("provider API selects its real image endpoint and request contract", async 
       }),
     ),
   );
+  assert.equal(parsed.image?.id, undefined);
   assert.equal(parsed.image?.result, PNG.toString("base64"));
   assert.equal(parsed.image?.revisedPrompt, "revised");
 });
@@ -224,6 +230,11 @@ test("SSE parser handles CRLF and chunk boundaries", async () => {
   const parsed = await parseCodexSse(new Response(stream));
   assert.equal(parsed.image?.result, PNG.toString("base64"));
   assert.equal(parsed.responseId, "response-1");
+});
+
+test("SSE parser leaves a missing provider image ID undefined", async () => {
+  const parsed = await parseCodexSse(sse(PNG.toString("base64"), "\n", null));
+  assert.equal(parsed.image?.id, undefined);
 });
 
 test("abortable backoff exits promptly", async () => {
@@ -296,6 +307,7 @@ test("normalized image providers ignore the recent-image placeholder for fresh g
     globalThis.fetch = originalFetch;
   });
   globalThis.fetch = async () => imageJson();
+  const toolContext = context(cwd);
   const result = await createTool().execute(
     "call",
     {
@@ -305,8 +317,9 @@ test("normalized image providers ignore the recent-image placeholder for fresh g
     },
     undefined,
     undefined,
-    context(cwd),
+    toolContext,
   );
+  assert.equal(toolContext.getBranchCalls(), 0);
   assert.equal(result.details.inputImageCount, 0);
   assert.equal(result.content.find((part) => part.type === "image")?.data, PNG.toString("base64"));
 });

@@ -45,10 +45,9 @@ export function isImageCapableGptModel(modelId: string | undefined): boolean {
 
 export function resolveRoutingModel(
   requestedModel: string | undefined,
-  configuredModel: string | undefined,
   activeModelId: string | undefined,
 ): string {
-  const model = requestedModel?.trim() || configuredModel?.trim() || activeModelId?.trim();
+  const model = requestedModel?.trim() || activeModelId?.trim();
   if (!isImageCapableGptModel(model)) {
     throw new Error(
       "gpt_image requires the active or explicitly selected model to be GPT 5.5 or newer.",
@@ -108,7 +107,7 @@ interface InputImage {
   mimeType: string;
 }
 interface GeneratedImage {
-  id: string;
+  id?: string;
   status: string;
   result: string;
   revisedPrompt?: string;
@@ -287,7 +286,6 @@ export async function parseImageGenerationJson(response: Response): Promise<Pars
   }
   return {
     image: {
-      id: "image_generation",
       status: "completed",
       result: image.b64_json,
       revisedPrompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
@@ -335,7 +333,7 @@ function handleEvent(value: unknown, parsed: ParsedResponse): void {
       if (typeof item.result !== "string" || !item.result)
         throw new Error("Codex image generation result contained no image data.");
       parsed.image = {
-        id: typeof item.id === "string" ? item.id : "image_generation",
+        id: typeof item.id === "string" ? item.id : undefined,
         status: typeof item.status === "string" ? item.status : "completed",
         result: item.result,
         revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
@@ -487,7 +485,7 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
     parameters,
     executionMode: "parallel",
     async execute(_toolCallId, params: GptImageParams, signal, onUpdate, ctx) {
-      const requestedModel = resolveRoutingModel(params.model, undefined, ctx.model?.id);
+      const requestedModel = resolveRoutingModel(params.model, ctx.model?.id);
       const provider = ctx.model?.provider;
       if (!provider) throw new Error("gpt_image requires an active GPT model.");
       const model =
@@ -505,9 +503,11 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
       const nativeResponses = usesNativeResponses(model);
       const session = sanitizePathPart(ctx.sessionManager.getSessionId(), "session");
       const messages: unknown[] = [];
-      for (const entry of ctx.sessionManager.getBranch()) {
-        if (entry.type === "message") messages.push(entry.message);
-        else if (entry.type === "custom_message") messages.push(entry);
+      if (nativeResponses && params.numLastImagesToInclude !== undefined) {
+        for (const entry of ctx.sessionManager.getBranch()) {
+          if (entry.type === "message") messages.push(entry.message);
+          else if (entry.type === "custom_message") messages.push(entry);
+        }
       }
       const images = nativeResponses
         ? await resolveInputImages(params, ctx.cwd, messages)
