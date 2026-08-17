@@ -10,6 +10,11 @@ import type { PublicSeat, PublicTableState } from "../src/engine/view.ts";
 import { redactStateFor } from "../src/engine/view.ts";
 import { HostRoom } from "../src/net/host.ts";
 import { RoomClient } from "../src/net/client.ts";
+import type { ChatMessage } from "../src/net/protocol.ts";
+import { sanitizeChatText } from "../src/net/sanitize.ts";
+
+const CHAT_LOG_LIMIT = 200;
+const CHAT_PANEL_LINES = 4;
 
 const RING_WIDTH = 75;
 const RING_HEIGHT = 15;
@@ -102,6 +107,8 @@ interface GameSession {
 	canStartHand(): boolean;
 	startHand(): void;
 	act(action: Action): void;
+	getChatLog(): readonly ChatMessage[];
+	sendChat(text: string): void;
 	subscribe(fn: () => void): () => void;
 	close(): void;
 }
@@ -137,6 +144,21 @@ function createBotsSession(opts: LocalOptions): GameSession {
 	}
 	const emitter = makeEmitter();
 	let botTimer: NodeJS.Timeout | undefined;
+	let chatLog: ChatMessage[] = [];
+	let announcedLogLength = 0;
+	let chatCounter = 0;
+
+	const pushChat = (seatIndex: number | null, displayName: string, text: string) => {
+		chatLog = [...chatLog, { id: `local-${++chatCounter}`, seatIndex, displayName, text, ts: Date.now() }];
+		if (chatLog.length > CHAT_LOG_LIMIT) chatLog = chatLog.slice(-CHAT_LOG_LIMIT);
+	};
+
+	const announceNewLog = () => {
+		while (announcedLogLength < state.log.length) {
+			pushChat(null, "table", state.log[announcedLogLength] as string);
+			announcedLogLength++;
+		}
+	};
 
 	const scheduleBotTurn = () => {
 		if (botTimer) return;
@@ -151,6 +173,7 @@ function createBotsSession(opts: LocalOptions): GameSession {
 			} catch {
 				state = applyAction(state, idx, { type: "fold" });
 			}
+			announceNewLog();
 			emitter.emit();
 			scheduleBotTurn();
 		}, 450);
@@ -163,13 +186,23 @@ function createBotsSession(opts: LocalOptions): GameSession {
 		canStartHand: () => state.street === "showdown" && state.seats.filter((s) => s && s.stack > 0).length >= 2,
 		startHand: () => {
 			state = engineStartHand(state);
+			announcedLogLength = 0;
+			announceNewLog();
 			emitter.emit();
 			scheduleBotTurn();
 		},
 		act: (action) => {
 			state = applyAction(state, 0, action);
+			announceNewLog();
 			emitter.emit();
 			scheduleBotTurn();
+		},
+		getChatLog: () => chatLog,
+		sendChat: (text) => {
+			const clean = sanitizeChatText(text);
+			if (!clean) return;
+			pushChat(0, opts.displayName, clean);
+			emitter.emit();
 		},
 		subscribe: emitter.subscribe,
 		close: () => {
@@ -184,6 +217,7 @@ interface HostOptions extends LocalOptions {
 }
 
 function createHostSession(opts: HostOptions, onReady: (port: number) => void): GameSession {
+	const emitter = makeEmitter();
 	const room = new HostRoom({
 		port: opts.port,
 		seatCount: opts.seatCount,
@@ -191,9 +225,9 @@ function createHostSession(opts: HostOptions, onReady: (port: number) => void): 
 		bigBlind: opts.bigBlind,
 		startingStack: opts.startingStack,
 		onStateChange: () => emitter.emit(),
+		onChatMessage: () => emitter.emit(),
 		onLog: opts.onLog,
 	});
-	const emitter = makeEmitter();
 	room.seatLocalPlayer(0, opts.myId, opts.displayName);
 	room
 		.waitForListening()
@@ -207,6 +241,8 @@ function createHostSession(opts: HostOptions, onReady: (port: number) => void): 
 		canStartHand: () => room.canStartHand() && room.state.street === "showdown",
 		startHand: () => room.startHand(),
 		act: (action) => room.applyLocalAction(0, action),
+		getChatLog: () => room.getChatHistory(),
+		sendChat: (text) => room.sendLocalChat(0, text),
 		subscribe: emitter.subscribe,
 		close: () => room.close(),
 	};
@@ -222,6 +258,7 @@ function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejec
 	const emitter = makeEmitter();
 	let lastState: PublicTableState | undefined;
 	let mySeatIndex: number | null = null;
+	let chatLog: ChatMessage[] = [];
 
 	const client = new RoomClient({
 		url: opts.url,
@@ -234,6 +271,14 @@ function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejec
 		},
 		onState: (state) => {
 			lastState = state;
+			emitter.emit();
+		},
+		onChatMessage: (message) => {
+			chatLog = [...chatLog, message].slice(-CHAT_LOG_LIMIT);
+			emitter.emit();
+		},
+		onChatHistory: (messages) => {
+			chatLog = messages.slice(-CHAT_LOG_LIMIT);
 			emitter.emit();
 		},
 		onRejected: (reason, message) => onEvent("rejected", message ?? reason),
@@ -285,6 +330,8 @@ function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejec
 		canStartHand: () => false,
 		startHand: () => {},
 		act: (action) => client.sendAction(action),
+		getChatLog: () => chatLog,
+		sendChat: (text) => client.sendChat(text),
 		subscribe: emitter.subscribe,
 		close: () => client.close(),
 	};
@@ -376,7 +423,23 @@ interface RaiseUiState {
 	amount: number;
 }
 
-function renderOverlay(session: GameSession, theme: Theme, raiseState: RaiseUiState, ctx: ExtensionCommandContext): string[] {
+interface ChatUiState {
+	active: boolean;
+	draft: string;
+}
+
+function formatChatLine(theme: Theme, msg: ChatMessage): string {
+	if (msg.seatIndex === null) return theme.fg("dim", `· ${msg.text}`);
+	return `${theme.fg("accent", msg.displayName)}: ${msg.text}`;
+}
+
+function renderOverlay(
+	session: GameSession,
+	theme: Theme,
+	raiseState: RaiseUiState,
+	chatState: ChatUiState,
+	ctx: ExtensionCommandContext,
+): string[] {
 	const state = session.getState();
 	const mySeatIndex = session.info.mySeatIndex;
 	const tokensToday = todaysTokenUsage(ctx);
@@ -395,15 +458,24 @@ function renderOverlay(session: GameSession, theme: Theme, raiseState: RaiseUiSt
 	for (const row of grid) lines.push(theme.fg("borderMuted", row));
 	lines.push("");
 
-	if (state.log.length > 0) {
-		lines.push(theme.fg("dim", state.log.slice(-1)[0] as string));
-	}
-
 	if (state.street === "showdown" && state.awards.length > 0) {
 		const idToName = new Map(state.seats.filter((s): s is NonNullable<typeof s> => !!s).map((s) => [s.id, s.displayName]));
 		const summary = state.awards.map((a) => `${idToName.get(a.seatIds[0] ?? "") ?? "?"} +${a.amount}`).join("  ·  ");
 		lines.push(theme.fg("success", `Winners: ${summary}`));
+		lines.push("");
 	}
+
+	const chatLog = session.getChatLog();
+	lines.push(theme.fg("dim", theme.bold("Chat")));
+	if (chatLog.length === 0) {
+		lines.push(theme.fg("dim", "  (no messages yet)"));
+	} else {
+		for (const msg of chatLog.slice(-CHAT_PANEL_LINES)) lines.push(`  ${formatChatLine(theme, msg)}`);
+	}
+	if (chatState.active) {
+		lines.push(theme.fg("accent", `> ${chatState.draft}_`));
+	}
+	lines.push("");
 
 	const legal = session.legalActionsForMe();
 	if (mySeatIndex === null) {
@@ -432,6 +504,10 @@ function renderOverlay(session: GameSession, theme: Theme, raiseState: RaiseUiSt
 		lines.push(theme.fg("dim", "Watching   ·   Esc back to work"));
 	}
 
+	if (!chatState.active && !raiseState.active) {
+		lines.push(theme.fg("dim", "Press / to chat"));
+	}
+
 	return lines;
 }
 
@@ -454,6 +530,8 @@ function widgetLines(session: GameSession | null, ctx: ExtensionContext): string
 	const pot = state.seats.reduce((sum, s) => sum + (s ? s.committed : 0), 0) + state.pots.reduce((sum, p) => sum + p.amount, 0);
 	parts.push(`pot ${pot}`);
 	parts.push(`today's tokens ${formatTokenCount(tokensToday)}`);
+	const chatCount = session.getChatLog().length;
+	if (chatCount > 0) parts.push(`chat ${chatCount}`);
 	parts.push("/poker to open the table");
 	return [parts.join("  ·  ")];
 }
@@ -480,6 +558,7 @@ export default function pokerExtension(pi: ExtensionAPI) {
 		}
 		const activeSession = session;
 		const raiseState: RaiseUiState = { active: false, amount: 0 };
+		const chatState: ChatUiState = { active: false, draft: "" };
 		const unsubscribe = activeSession.subscribe(() => refreshWidget(ctx));
 
 		await ctx.ui.custom<void>((tui: TUI, theme: Theme, _keybindings: KeybindingsManager, done: (result: void) => void) => {
@@ -496,15 +575,39 @@ export default function pokerExtension(pi: ExtensionAPI) {
 
 			return {
 				render(_width: number) {
-					return renderOverlay(activeSession, theme, raiseState, ctx);
+					return renderOverlay(activeSession, theme, raiseState, chatState, ctx);
 				},
 				invalidate() {},
 				handleInput(data: string) {
+					if (chatState.active) {
+						if (matchesKey(data, "escape")) {
+							chatState.active = false;
+							chatState.draft = "";
+						} else if (matchesKey(data, "enter")) {
+							const text = chatState.draft.trim();
+							chatState.active = false;
+							chatState.draft = "";
+							if (text) activeSession.sendChat(text);
+						} else if (matchesKey(data, "backspace")) {
+							chatState.draft = chatState.draft.slice(0, -1);
+						} else if (!data.startsWith("\x1B") && data.length > 0 && chatState.draft.length < 240) {
+							chatState.draft += data;
+						}
+						tui.requestRender();
+						return;
+					}
+
 					if (matchesKey(data, "escape")) {
 						stop();
 						unsubscribe();
 						refreshWidget(ctx);
 						done();
+						return;
+					}
+
+					if (matchesKey(data, "/")) {
+						chatState.active = true;
+						tui.requestRender();
 						return;
 					}
 

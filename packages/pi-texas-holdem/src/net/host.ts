@@ -1,8 +1,14 @@
+import crypto from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { applyAction, createTable, leaveSeat, seatPlayer, startHand } from "../engine/table.ts";
 import type { Action, TableState } from "../engine/types.ts";
 import { redactStateFor } from "../engine/view.ts";
-import { decodeClientMessage, encode, PROTOCOL_VERSION } from "./protocol.ts";
+import { type ChatMessage, decodeClientMessage, encode, PROTOCOL_VERSION } from "./protocol.ts";
+import { sanitizeChatText } from "./sanitize.ts";
+
+const CHAT_HISTORY_LIMIT = 200;
+const CHAT_HISTORY_SENT_ON_JOIN = 30;
+const CHAT_MIN_INTERVAL_MS = 400;
 
 export interface HostRoomOptions {
 	port: number;
@@ -11,6 +17,7 @@ export interface HostRoomOptions {
 	bigBlind: number;
 	startingStack: number;
 	onStateChange: (state: TableState) => void;
+	onChatMessage?: (message: ChatMessage) => void;
 	onLog?: (line: string) => void;
 }
 
@@ -18,6 +25,7 @@ interface Connection {
 	ws: WebSocket;
 	seatIndex: number;
 	playerId: string;
+	lastChatAt: number;
 }
 
 /**
@@ -30,6 +38,8 @@ export class HostRoom {
 	private wss: WebSocketServer;
 	private connections = new Set<Connection>();
 	private readonly opts: HostRoomOptions;
+	private chatLog: ChatMessage[] = [];
+	private announcedLogLength = 0;
 
 	constructor(opts: HostRoomOptions) {
 		this.opts = opts;
@@ -71,13 +81,29 @@ export class HostRoom {
 
 	startHand(): void {
 		this.state = startHand(this.state);
+		this.announcedLogLength = 0;
+		this.announceNewLog();
 		this.log(`-- hand ${this.state.handNumber} --`);
 		this.broadcast();
 	}
 
 	applyLocalAction(seatIndex: number, action: Action): void {
 		this.state = applyAction(this.state, seatIndex, action);
+		this.announceNewLog();
 		this.broadcast();
+	}
+
+	getChatHistory(): readonly ChatMessage[] {
+		return this.chatLog;
+	}
+
+	/** Chat from the host's own local seat; bypasses the per-connection rate limit. */
+	sendLocalChat(seatIndex: number, text: string): void {
+		const seat = this.state.seats[seatIndex];
+		if (!seat) return;
+		const clean = sanitizeChatText(text);
+		if (!clean) return;
+		this.pushChat(seatIndex, seat.displayName, clean);
 	}
 
 	close(): void {
@@ -87,6 +113,26 @@ export class HostRoom {
 
 	private log(line: string): void {
 		this.opts.onLog?.(line);
+	}
+
+	/** Mirrors new engine log lines (folds, calls, showdown results, ...) into chat as system messages. */
+	private announceNewLog(): void {
+		while (this.announcedLogLength < this.state.log.length) {
+			const line = this.state.log[this.announcedLogLength] as string;
+			this.pushChat(null, "table", line);
+			this.announcedLogLength++;
+		}
+	}
+
+	private pushChat(seatIndex: number | null, displayName: string, text: string): void {
+		const message: ChatMessage = { id: crypto.randomUUID(), seatIndex, displayName, text, ts: Date.now() };
+		this.chatLog.push(message);
+		if (this.chatLog.length > CHAT_HISTORY_LIMIT) this.chatLog.shift();
+		this.opts.onChatMessage?.(message);
+		const encoded = encode({ type: "chatMessage", message });
+		for (const conn of this.connections) {
+			if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(encoded);
+		}
 	}
 
 	private handleConnection(ws: WebSocket): void {
@@ -118,9 +164,10 @@ export class HostRoom {
 					displayName: message.displayName,
 					stack: this.opts.startingStack,
 				});
-				conn = { ws, seatIndex, playerId: message.playerId };
+				conn = { ws, seatIndex, playerId: message.playerId, lastChatAt: 0 };
 				this.connections.add(conn);
 				this.log(`${message.displayName} joined at seat ${seatIndex}`);
+				this.pushChat(null, "table", `${message.displayName} joined the table`);
 				ws.send(
 					encode({
 						type: "welcome",
@@ -131,6 +178,7 @@ export class HostRoom {
 						bigBlind: this.state.bigBlind,
 					}),
 				);
+				ws.send(encode({ type: "chatHistory", messages: this.chatLog.slice(-CHAT_HISTORY_SENT_ON_JOIN) }));
 				this.broadcast();
 				return;
 			}
@@ -146,6 +194,20 @@ export class HostRoom {
 				} catch (error) {
 					ws.send(encode({ type: "error", message: error instanceof Error ? error.message : String(error) }));
 				}
+				return;
+			}
+
+			if (message.type === "chat") {
+				const now = Date.now();
+				if (now - conn.lastChatAt < CHAT_MIN_INTERVAL_MS) {
+					ws.send(encode({ type: "error", message: "You're sending messages too fast" }));
+					return;
+				}
+				conn.lastChatAt = now;
+				const clean = sanitizeChatText(message.text);
+				if (!clean) return;
+				const seat = this.state.seats[conn.seatIndex];
+				this.pushChat(conn.seatIndex, seat?.displayName ?? conn.playerId, clean);
 				return;
 			}
 
@@ -170,6 +232,7 @@ export class HostRoom {
 				}
 				this.state = leaveSeat(this.state, conn.seatIndex);
 				this.log(`${seat.displayName} disconnected`);
+				this.pushChat(null, "table", `${seat.displayName} disconnected`);
 				this.broadcast();
 			}
 		});

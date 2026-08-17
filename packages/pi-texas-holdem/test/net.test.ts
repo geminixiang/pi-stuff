@@ -28,6 +28,8 @@ test("a remote client can join a hosted room and see redacted state", async () =
 				displayName: "guest-machine",
 				onWelcome: (info) => resolve(info),
 				onState: () => {},
+				onChatMessage: () => {},
+				onChatHistory: () => {},
 				onRejected: (reason, message) => assert.fail(`unexpected rejection: ${reason} ${message ?? ""}`),
 				onClose: () => {},
 			});
@@ -64,6 +66,8 @@ test("actions from a connected client update the host's authoritative state", as
 				displayName: "guest-machine",
 				onWelcome: () => resolve(),
 				onState: () => {},
+				onChatMessage: () => {},
+				onChatHistory: () => {},
 				onRejected: () => resolve(),
 				onClose: () => {},
 			});

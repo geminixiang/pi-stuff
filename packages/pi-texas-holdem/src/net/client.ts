@@ -1,7 +1,7 @@
 import { WebSocket } from "ws";
 import type { Action } from "../engine/types.ts";
 import type { PublicTableState } from "../engine/view.ts";
-import { decodeServerMessage, encode, PROTOCOL_VERSION } from "./protocol.ts";
+import { type ChatMessage, decodeServerMessage, encode, PROTOCOL_VERSION } from "./protocol.ts";
 
 export interface RoomClientOptions {
 	url: string;
@@ -9,6 +9,8 @@ export interface RoomClientOptions {
 	displayName: string;
 	onWelcome: (info: { seatIndex: number; seatCount: number; smallBlind: number; bigBlind: number }) => void;
 	onState: (state: PublicTableState) => void;
+	onChatMessage: (message: ChatMessage) => void;
+	onChatHistory: (messages: ChatMessage[]) => void;
 	onRejected: (reason: "roomFull" | "protocolMismatch" | "error", message?: string) => void;
 	onClose: () => void;
 }
@@ -38,6 +40,10 @@ export class RoomClient {
 		this.ws.send(encode({ type: "action", action }));
 	}
 
+	sendChat(text: string): void {
+		this.ws.send(encode({ type: "chat", text }));
+	}
+
 	close(): void {
 		this.ws.close();
 	}
@@ -56,6 +62,12 @@ export class RoomClient {
 				break;
 			case "state":
 				this.opts.onState(message.state);
+				break;
+			case "chatMessage":
+				this.opts.onChatMessage(message.message);
+				break;
+			case "chatHistory":
+				this.opts.onChatHistory(message.messages);
 				break;
 			case "roomFull":
 				this.opts.onRejected("roomFull");
