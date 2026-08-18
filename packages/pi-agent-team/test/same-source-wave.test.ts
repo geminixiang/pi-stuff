@@ -4,7 +4,7 @@ import type { TeamCommand, TeamMember, TeamTurn } from "../src/domain.js";
 import { TeamRuntime } from "../src/runtime.js";
 
 test("a wave woken by one shared broadcast runs sequentially: later members see earlier members' claims already applied", async () => {
-  const digestsAtWake: { id: string; claims: Record<string, string> }[] = [];
+  const digestsAtWake: { id: string; turn: number; claims: Record<string, string> }[] = [];
   const members: TeamMember[] = [
     { id: "a", name: "A" },
     { id: "b", name: "B" },
@@ -16,7 +16,7 @@ test("a wave woken by one shared broadcast runs sequentially: later members see 
     readonly sessionId = crypto.randomUUID();
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
-      digestsAtWake.push({ id: this.member.id, claims: { ...turn.digest.claims } });
+      digestsAtWake.push({ id: this.member.id, turn: turn.turn, claims: { ...turn.digest.claims } });
       if (turn.turn === 1) return [{ type: "claim", resource: "canonical" }];
       return [{ type: "finish", summary: "done" }];
     }
@@ -35,8 +35,9 @@ test("a wave woken by one shared broadcast runs sequentially: later members see 
   assert.equal(rejectedEvents.length, 3, "the other three are rejected, not left racing");
 
   const winner = claimedEvents[0].memberId;
-  const firstWake = digestsAtWake[0];
-  const laterWakes = digestsAtWake.slice(1);
+  const firstTurnWakes = digestsAtWake.filter((wake) => wake.turn === 1);
+  const firstWake = firstTurnWakes[0];
+  const laterWakes = firstTurnWakes.slice(1);
   assert.deepEqual(firstWake.claims, {}, "the first member in the wave sees no prior claim yet");
   for (const wake of laterWakes)
     assert.equal(
