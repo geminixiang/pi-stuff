@@ -1,167 +1,189 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import mapping from "../catalog/model-mapping.json" with { type: "json" };
 import {
   buildCatalog,
   checkAuthenticatedVisibility,
   checkCatalog,
+  MODELS_DEV_URL,
   MODELS_URL,
   PRICING_URL,
   serializeCatalog,
   syncCatalog,
 } from "../scripts/model-catalog.mjs";
 
-const ids = ["deepseek-v4-flash", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const testMapping = {
+  schemaVersion: 1,
+  source: MODELS_DEV_URL,
+  models: [{ id: "model-a", modelsDevProvider: "canonical", modelsDevModel: "upstream-a" }],
+  unsupported: [{ id: "codex-auto-review", reason: "No defensible match." }],
+};
 const pricing = {
   data: [
     {
-      model_name: "deepseek-v4-flash",
-      model_ratio: 0.75,
+      model_name: "model-a",
+      model_ratio: 2,
       completion_ratio: 3,
-      cache_ratio: 0.0333,
-      supported_endpoint_types: ["anthropic", "openai", "openai-response"],
-      enable_groups: ["deepseek-officially"],
-    },
-    {
-      model_name: "gpt-5.6-sol",
-      model_ratio: 2.5,
-      completion_ratio: 6,
-      cache_ratio: 0.1,
-      supported_endpoint_types: ["openai-response", "openai"],
-      enable_groups: ["hongjing", "azure-officially", "codex"],
-    },
-    {
-      model_name: "gpt-5.6-terra",
-      model_ratio: 1,
-      completion_ratio: 6,
-      cache_ratio: 0.1,
-      supported_endpoint_types: ["openai-response", "openai"],
-      enable_groups: ["hongjing", "azure-officially", "codex"],
-    },
-    {
-      model_name: "gpt-5.6-luna",
-      model_ratio: 0.5,
-      completion_ratio: 6,
-      cache_ratio: 0.1,
-      supported_endpoint_types: ["openai-response"],
-      enable_groups: ["codex"],
+      cache_ratio: 0.25,
+      cache_creation_ratio_5m: 1.25,
+      supported_endpoint_types: ["openai-response", "anthropic"],
+      enable_groups: ["b", "a"],
     },
   ],
 };
-const expected = buildCatalog(pricing, ids);
-const readExpected = async () => serializeCatalog(expected);
-const pricingFetch = async (url) => {
-  assert.equal(url, PRICING_URL);
-  return Response.json(pricing);
+const modelsDev = {
+  canonical: {
+    models: {
+      "upstream-a": {
+        name: "Upstream A",
+        reasoning: true,
+        reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+        modalities: { input: ["text", "image", "video", "pdf"] },
+        limit: { context: 1000, output: 200 },
+        cost: { input: 999999, output: 999999 },
+      },
+    },
+  },
+};
+const expected = buildCatalog(pricing, modelsDev, testMapping);
+const files = new Map([
+  ["model-mapping.json", JSON.stringify(testMapping)],
+  ["models.json", serializeCatalog(expected)],
+]);
+const readExpected = async (url) => files.get(String(url).split("/").pop());
+const publicFetch = async (url) => {
+  if (url === PRICING_URL) return Response.json(pricing);
+  if (url === MODELS_DEV_URL) return Response.json(modelsDev);
+  throw new Error(`Unexpected URL: ${url}`);
 };
 
-test("generation preserves curated order and derives PackyAPI base costs", () => {
-  assert.deepEqual(
-    expected.models.map((model) => model.id),
-    ids,
-  );
-  assert.deepEqual(
-    expected.models.map((model) => model.cost),
-    [
-      { input: 1.5, output: 4.5, cacheRead: 0.04995, cacheWrite: 0 },
-      { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-      { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
-      { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 0 },
-    ],
-  );
-  assert.deepEqual(expected.models[1].endpoints, ["openai", "openai-response"]);
-  assert.deepEqual(expected.models[1].groups, ["azure-officially", "codex", "hongjing"]);
-  assert.equal(serializeCatalog(expected), serializeCatalog(expected));
+test("generation separates PackyAPI facts from models.dev capabilities", () => {
+  assert.deepEqual(expected.models[0].cost, { input: 4, output: 12, cacheRead: 1, cacheWrite: 5 });
+  assert.equal(expected.models[0].api, "openai-responses");
+  assert.deepEqual(expected.models[0].groups, ["a", "b"]);
+  assert.deepEqual(expected.models[0].capability.input, ["text", "image"]);
+  assert.deepEqual(expected.models[0].capability.thinkingLevelMap, {
+    off: null,
+    minimal: null,
+    low: "low",
+    medium: null,
+    high: "high",
+    xhigh: null,
+    max: null,
+  });
+  assert.equal(expected.models[0].capability.contextWindow, 1000);
   assert.doesNotMatch(serializeCatalog(expected), /generatedAt/);
 });
 
-test("generation rejects missing models, invalid pricing, and missing Responses support", () => {
-  assert.throws(() => buildCatalog({ data: pricing.data.slice(1) }, ids), /missing curated model/);
-  assert.throws(
-    () =>
-      buildCatalog(
-        {
-          data: pricing.data.map((record) =>
-            record.model_name === ids[0] ? { ...record, model_ratio: "0.75" } : record,
-          ),
-        },
-        ids,
-      ),
-    /invalid model_ratio/,
+test("models.dev cost is discarded even when maliciously large", () => {
+  const poisoned = structuredClone(modelsDev);
+  poisoned.canonical.models["upstream-a"].cost = {
+    input: Number.MAX_VALUE,
+    output: -1,
+    cache_read: 7,
+    cache_write: Number.MAX_VALUE,
+  };
+  assert.deepEqual(
+    buildCatalog(pricing, poisoned, testMapping).models[0].cost,
+    expected.models[0].cost,
+  );
+  const packyCacheWrite = structuredClone(pricing);
+  packyCacheWrite.data[0].cache_creation_ratio_5m = 2;
+  assert.equal(buildCatalog(packyCacheWrite, poisoned, testMapping).models[0].cost.cacheWrite, 8);
+});
+
+test("endpoint priority is Responses, completions, then Anthropic", () => {
+  const withEndpoints = (endpoints) => ({
+    data: [{ ...pricing.data[0], supported_endpoint_types: endpoints }],
+  });
+  assert.equal(
+    buildCatalog(withEndpoints(["anthropic", "openai"]), modelsDev, testMapping).models[0].api,
+    "openai-completions",
+  );
+  assert.equal(
+    buildCatalog(withEndpoints(["anthropic"]), modelsDev, testMapping).models[0].api,
+    "anthropic-messages",
   );
   assert.throws(
-    () =>
-      buildCatalog(
-        {
-          data: pricing.data.map((record) =>
-            record.model_name === ids[3]
-              ? { ...record, supported_endpoint_types: ["openai"] }
-              : record,
-          ),
-        },
-        ids,
-      ),
-    /no longer supports openai-response/,
+    () => buildCatalog(withEndpoints(["other"]), modelsDev, testMapping),
+    /no supported Pi endpoint/,
   );
 });
 
-test("sync deterministically writes the expected catalog", async () => {
+test("explicit mapping is required and missing capabilities fail", () => {
+  assert.throws(
+    () => buildCatalog({ data: [] }, modelsDev, testMapping),
+    /missing supported model/,
+  );
+  assert.throws(() => buildCatalog(pricing, {}, testMapping), /missing mapped capability/);
+});
+
+test("sync deterministically writes combined source metadata", async () => {
   const writes = [];
   await syncCatalog({
-    fetchImpl: pricingFetch,
+    fetchImpl: publicFetch,
     readFileImpl: readExpected,
     writeFileImpl: async (url, value) => writes.push({ url: String(url), value }),
   });
-  assert.equal(writes.length, 1);
-  assert.match(writes[0].url, /catalog\/models\.json$/);
   assert.equal(writes[0].value, serializeCatalog(expected));
+  assert.equal(serializeCatalog(expected), serializeCatalog(expected));
 });
 
-test("check detects a stale committed catalog with an actionable message", async () => {
+test("check detects pricing and capability drift", async () => {
+  await checkCatalog({ fetchImpl: publicFetch, readFileImpl: readExpected });
   const stale = structuredClone(expected);
-  stale.models[0].cost.input = 99;
+  stale.models[0].capability.contextWindow = 9;
+  const staleRead = async (url) =>
+    String(url).endsWith("models.json") ? serializeCatalog(stale) : JSON.stringify(testMapping);
   await assert.rejects(
-    checkCatalog({ fetchImpl: pricingFetch, readFileImpl: async () => serializeCatalog(stale) }),
+    checkCatalog({ fetchImpl: publicFetch, readFileImpl: staleRead }),
     /catalog is stale.*models:sync/s,
   );
-  await checkCatalog({ fetchImpl: pricingFetch, readFileImpl: readExpected });
 });
 
-test("authenticated check validates every committed ID", async () => {
-  let authorization;
-  const visible = await checkAuthenticatedVisibility({
+test("authenticated visibility reports known unsupported extras without failing", async () => {
+  const committed = { ...expected, models: mapping.models.map(({ id }) => ({ id })) };
+  const authRead = async (url) =>
+    String(url).endsWith("models.json") ? JSON.stringify(committed) : JSON.stringify(mapping);
+  const result = await checkAuthenticatedVisibility({
     apiKey: "secret-value",
-    readFileImpl: readExpected,
+    readFileImpl: authRead,
     fetchImpl: async (url, init) => {
       assert.equal(url, MODELS_URL);
-      authorization = new Headers(init.headers).get("authorization");
-      return Response.json({ data: ids.map((id) => ({ id })) });
+      assert.equal(new Headers(init.headers).get("authorization"), "Bearer secret-value");
+      return Response.json({
+        data: [
+          ...mapping.models.map(({ id }) => ({ id })),
+          { id: "codex-auto-review" },
+          { id: "claude-fable-5" },
+          { id: "newly-added-model" },
+        ],
+      });
     },
   });
-  assert.equal(authorization, "Bearer secret-value");
-  assert.deepEqual(visible, ids);
+  assert.deepEqual(
+    result.supported,
+    mapping.models.map(({ id }) => id),
+  );
+  assert.deepEqual(result.extraVisible, [
+    "claude-fable-5",
+    "codex-auto-review",
+    "newly-added-model",
+  ]);
 });
 
-test("authenticated failures are useful and never expose the secret or response", async () => {
+test("authenticated failures never expose secrets or responses", async () => {
   const secret = "never-print-this";
   await assert.rejects(
     checkAuthenticatedVisibility({
       apiKey: secret,
       readFileImpl: readExpected,
-      fetchImpl: async () => new Response(`upstream echoed ${secret}`, { status: 401 }),
+      fetchImpl: async () => new Response(`echo ${secret}`, { status: 401 }),
     }),
     (error) => {
       assert.match(error.message, /visibility check failed/);
       assert.doesNotMatch(error.message, new RegExp(secret));
-      assert.doesNotMatch(error.message, /upstream echoed/);
       return true;
     },
-  );
-  await assert.rejects(
-    checkAuthenticatedVisibility({
-      apiKey: secret,
-      readFileImpl: readExpected,
-      fetchImpl: async () => Response.json({ data: ids.slice(1).map((id) => ({ id })) }),
-    }),
-    /cannot see curated models: deepseek-v4-flash/,
   );
 });

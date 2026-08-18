@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-packyapi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PackyAPI provider extension for Pi",
   "keywords": [
     "packyapi",
@@ -29,7 +29,7 @@
     "check": "tsc --noEmit",
     "models:check": "node scripts/check-models.mjs",
     "test": "node --import tsx --test test/provider.test.ts test/model-catalog.test.mjs",
-    "models:sync": "node scripts/sync-models.mjs",
+    "models:sync": "node scripts/sync-models.mjs && oxfmt catalog/models.json",
     "models:check-auth": "node scripts/check-models-auth.mjs",
     "smoke:pi": "node scripts/smoke-pi.mjs"
   },
@@ -37,12 +37,13 @@
     "@earendil-works/pi-ai": "0.82.1",
     "@earendil-works/pi-coding-agent": "0.82.1",
     "@types/node": "^24.10.1",
+    "oxfmt": "0.60.0",
     "tsx": "^4.20.6",
     "typescript": "7.0.2"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.82.1",
-    "@earendil-works/pi-coding-agent": ">=0.82.1"
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
   },
   "engines": {
     "node": ">=22.19.0"

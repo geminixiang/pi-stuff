@@ -1,6 +1,6 @@
 # @geminixiang/pi-packyapi
 
-A [Pi](https://github.com/earendil-works/pi) provider extension for PackyAPI. It uses PackyAPI's OpenAI Responses endpoint with the Codex-compatible client identity required by PackyAPI and intentionally exposes only a small curated model catalog.
+A [Pi](https://github.com/earendil-works/pi) provider extension for PackyAPI. It provides `/login` API-key entry and a version-controlled catalog assembled from PackyAPI and models.dev.
 
 ## Install
 
@@ -8,52 +8,50 @@ A [Pi](https://github.com/earendil-works/pi) provider extension for PackyAPI. It
 pi install npm:@geminixiang/pi-packyapi
 ```
 
-Run `/login` in Pi, select **PackyAPI**, and enter your API key. Pi stores the credential securely. Alternatively, set it for the Pi process:
+Run `/login`, select **PackyAPI**, and enter your API key. Alternatively set `PACKYAPI_API_KEY` for the Pi process. If `~/.pi/agent/models.json` already contains `providers.packyapi`, remove that provider block after installing: Pi composes that local definition above extension providers and it would replace this catalog.
 
-```sh
-export PACKYAPI_API_KEY='...'
-```
+## Data ownership
 
-Then select a PackyAPI model with `/model`.
+| Data                                                                                | Authoritative source                                                            |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Base token costs, token groups, supported endpoints                                 | [PackyAPI pricing](https://www.packyapi.com/api/pricing)                        |
+| Models visible to a particular token                                                | Authenticated PackyAPI `/v1/models`                                             |
+| Display name, reasoning, text/image input, context/output limits, reasoning options | [models.dev](https://models.dev/api.json), through `catalog/model-mapping.json` |
+| Ambiguous ID mappings, Pi API/compat exceptions, Responses client identity          | Committed local mapping/overrides                                               |
 
-If you previously configured `providers.packyapi` in `~/.pi/agent/models.json`, remove that provider block after installing this extension. Pi intentionally composes `models.json` above extension providers, so the old block would replace this package's curated model catalog. Run `/login` afterward to store the API key through Pi instead.
+models.dev costs are intentionally discarded. Catalog costs use only PackyAPI's ratios (`input = model_ratio × 2`; output, cache-read, and cache-write are derived from PackyAPI completion, cache, and `cache_creation_ratio_5m` values). Actual billing can additionally vary by token group and peak pricing.
 
-## Curated models
+Endpoint selection also comes only from PackyAPI: `openai-response` is preferred, then `openai`, then `anthropic`. The Codex-compatible `User-Agent: codex_exec` is applied only to Responses models. Anthropic-only models use the Claude-compatible identity required by PackyAPI.
 
-- `deepseek-v4-flash`
-- `gpt-5.6-sol`
-- `gpt-5.6-terra`
-- `gpt-5.6-luna`
+## Support policy
 
-The version-controlled `catalog/models.json` contains PackyAPI's public model facts: supported endpoints, groups, and base cost per million tokens. Capability metadata that pricing cannot establish—context windows, output limits, modalities, reasoning controls, and compatibility—is maintained in `extensions/overrides.ts`.
+The extension supports only PackyAPI IDs with an explicit, reviewable models.dev mapping and a transport that works through Pi. It currently supports 14 models across DeepSeek, GLM, GPT, Grok, Kimi, and MiniMax. Nine visible Claude models remain unsupported because PackyAPI restricts them to the official Claude Code client; `codex-auto-review` remains unsupported because it has no defensible models.dev capability match. Newly visible but unsupported IDs are reported by the authenticated check and are not guessed or silently exposed.
 
-Catalog costs are PackyAPI base costs derived from its public ratios. Actual billed costs can differ because PackyAPI may apply token-group and peak-pricing multipliers. Consult PackyAPI's current pricing before relying on estimates.
+Pi supports text and image model inputs, so models.dev `video` and `pdf` modalities are ignored. Reasoning levels are advertised only when models.dev explicitly lists the corresponding effort; local overrides are reserved for verified transport exceptions.
 
 ## Maintaining the catalog
 
-Update public facts from PackyAPI's pricing endpoint:
+`catalog/model-mapping.json` is the single explicit supported-ID list. To fetch both public sources and deterministically regenerate `catalog/models.json`:
 
 ```sh
 npm run models:sync
 ```
 
-This deterministically rewrites `catalog/models.json` for exactly the IDs already committed there. It does not read an API key or access Pi user configuration. Review and commit the generated diff.
+Review and commit the generated diff. It contains no `generatedAt`, credential, or token-scoped response.
 
-Verify that the committed catalog matches current public pricing without writing files:
+Check committed pricing and capability metadata for drift without writing:
 
 ```sh
 npm run models:check
 ```
 
-To separately verify that a maintainer token can see every curated model through PackyAPI's token-scoped `/v1/models` endpoint:
+Optionally verify token visibility. This does not update the catalog and does not log the key or full response:
 
 ```sh
 PACKYAPI_API_KEY='...' npm run models:check-auth
 ```
 
-The authenticated check does not update the catalog and never logs the key, headers, or full response. Use a secure environment injector rather than putting credentials in shell history.
-
-Before release, verify the packaged extension through Pi's real extension loader:
+Before release, test the package through Pi's real extension loader:
 
 ```sh
 npm run smoke:pi
