@@ -14,12 +14,24 @@ Run `/login`, select **PackyAPI**, and enter your API key. Alternatively set `PA
 
 | Data                                                                                | Authoritative source                                                            |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Base token costs, token groups, supported endpoints                                 | [PackyAPI pricing](https://www.packyapi.com/api/pricing)                        |
+| Raw quota costs, token groups, supported endpoints                                  | [PackyAPI pricing](https://www.packyapi.com/api/pricing)                        |
+| CNY/USD exchange rate                                                               | [PackyAPI status](https://www.packyapi.com/api/status)                          |
+| CNY paid per quota unit                                                             | [PackyAPI top-up policy](https://docs.packyapi.ai/docs/register/3-quota.html)   |
 | Models visible to a particular token                                                | Authenticated PackyAPI `/v1/models`                                             |
 | Display name, reasoning, text/image input, context/output limits, reasoning options | [models.dev](https://models.dev/api.json), through `catalog/model-mapping.json` |
 | Ambiguous ID mappings, Pi API/compat exceptions, Responses client identity          | Committed local mapping/overrides                                               |
 
-models.dev costs are intentionally discarded. Catalog costs use only PackyAPI's ratios (`input = model_ratio × 2`; output, cache-read, and cache-write are derived from PackyAPI completion, cache, and `cache_creation_ratio_5m` values). Actual billing can additionally vary by token group and peak pricing.
+models.dev costs are intentionally discarded. Raw `quotaCost` values per million tokens use only PackyAPI's ratios (`input = model_ratio × 2`; output, cache-read, and cache-write are derived from PackyAPI completion, cache, and `cache_creation_ratio_5m` values).
+
+Pi receives a real USD-equivalent `cost`, calculated as:
+
+```text
+cost = quotaCost × CNY_PER_QUOTA ÷ usd_exchange_rate
+```
+
+`CNY_PER_QUOTA` is a committed policy constant of `1`, based on PackyAPI's current [top-up documentation](https://docs.packyapi.ai/docs/register/3-quota.html): 1 CNY purchases 1 USD-named quota unit. The exchange rate is fetched from PackyAPI `/api/status` (currently 7 CNY/USD). For example, a raw cost of 5 quota per million tokens becomes `5 × 1 ÷ 7 = US$0.714285714286` per million tokens.
+
+These are **base** USD-equivalent costs. Token-group and peak-pricing multipliers are intentionally not applied because they vary by credential and request time, so actual usage cost can differ. The generated catalog preserves both auditable `quotaCost` and converted `cost`, but the runtime provider passes only `cost` to Pi.
 
 Endpoint selection also comes only from PackyAPI: `openai-response` is preferred, then `openai`, then `anthropic`. The Codex-compatible `User-Agent: codex_exec` is applied only to Responses models. Anthropic-only models use the Claude-compatible identity required by PackyAPI.
 
@@ -31,7 +43,7 @@ Pi supports text and image model inputs, so models.dev `video` and `pdf` modalit
 
 ## Maintaining the catalog
 
-`catalog/model-mapping.json` is the single explicit supported-ID list. To fetch both public sources and deterministically regenerate `catalog/models.json`:
+`catalog/model-mapping.json` is the single explicit supported-ID list. To fetch PackyAPI pricing and status plus models.dev capabilities, then deterministically regenerate `catalog/models.json`:
 
 ```sh
 npm run models:sync
@@ -39,7 +51,7 @@ npm run models:sync
 
 Review and commit the generated diff. It contains no `generatedAt`, credential, or token-scoped response.
 
-Check committed pricing and capability metadata for drift without writing:
+Check committed pricing, exchange-rate, and capability metadata for drift without writing:
 
 ```sh
 npm run models:check

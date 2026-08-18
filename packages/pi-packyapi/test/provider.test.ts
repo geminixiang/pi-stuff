@@ -13,6 +13,8 @@ test("provider exposes every explicitly mapped model with endpoint-selected APIs
   assert.equal(PACKYAPI_MODELS.length, 14);
   for (const model of PACKYAPI_MODELS) {
     assert.equal(model.provider, "packyapi");
+    assert.equal("quotaCost" in model, false);
+    assert.ok(model.cost.input >= 0);
     assert.equal(
       model.baseUrl,
       model.api === "anthropic-messages" ? "https://cf.api.fan" : "https://cf.api.fan/v1",

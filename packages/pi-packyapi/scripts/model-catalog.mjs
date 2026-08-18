@@ -1,8 +1,15 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 export const PRICING_URL = "https://www.packyapi.com/api/pricing";
+export const STATUS_URL = "https://www.packyapi.com/api/status";
+export const TOP_UP_POLICY_URL = "https://docs.packyapi.ai/docs/register/3-quota.html";
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 export const MODELS_URL = "https://cf.api.fan/v1/models";
+/**
+ * PackyAPI currently documents that one CNY purchases one USD-named quota unit.
+ * Policy source: https://docs.packyapi.ai/docs/register/3-quota.html
+ */
+export const CNY_PER_QUOTA = 1;
 export const CATALOG_URL = new URL("../catalog/models.json", import.meta.url);
 export const MAPPING_URL = new URL("../catalog/model-mapping.json", import.meta.url);
 
@@ -32,6 +39,23 @@ function finiteNumber(value, field, id) {
 
 function stableNumber(value) {
   return Number(value.toPrecision(12));
+}
+
+function positiveExchangeRate(statusPayload) {
+  const value = statusPayload?.data?.usd_exchange_rate;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error("PackyAPI status has invalid usd_exchange_rate.");
+  }
+  return value;
+}
+
+function usdEquivalent(quotaCost, usdExchangeRate) {
+  return Object.fromEntries(
+    Object.entries(quotaCost).map(([name, value]) => [
+      name,
+      stableNumber((value * CNY_PER_QUOTA) / usdExchangeRate),
+    ]),
+  );
 }
 
 function selectApi(endpoints, id) {
@@ -77,7 +101,7 @@ function capability(record, id) {
   };
 }
 
-export function buildCatalog(pricingPayload, modelsDevPayload, mapping) {
+export function buildCatalog(pricingPayload, statusPayload, modelsDevPayload, mapping) {
   if (
     mapping?.schemaVersion !== 1 ||
     mapping?.source !== MODELS_DEV_URL ||
@@ -85,6 +109,7 @@ export function buildCatalog(pricingPayload, modelsDevPayload, mapping) {
   ) {
     throw new Error("Committed model mapping has an unsupported schema or source URL.");
   }
+  const usdExchangeRate = positiveExchangeRate(statusPayload);
   const pricingById = new Map(records(pricingPayload).map((record) => [record.model_name, record]));
   const models = mapping.models.map(({ id, modelsDevProvider, modelsDevModel }) => {
     const price = pricingById.get(id);
@@ -110,25 +135,36 @@ export function buildCatalog(pricingPayload, modelsDevPayload, mapping) {
         ? 0
         : finiteNumber(price.cache_creation_ratio_5m, "cache_creation_ratio_5m", id);
     const inputCost = modelRatio * 2;
+    const quotaCost = {
+      input: stableNumber(inputCost),
+      output: stableNumber(inputCost * completionRatio),
+      cacheRead: stableNumber(inputCost * cacheRatio),
+      cacheWrite: stableNumber(inputCost * cacheCreationRatio),
+    };
     return {
       id,
       modelsDevProvider,
       modelsDevModel,
       api: selectApi(endpoints, id),
-      cost: {
-        input: stableNumber(inputCost),
-        output: stableNumber(inputCost * completionRatio),
-        cacheRead: stableNumber(inputCost * cacheRatio),
-        cacheWrite: stableNumber(inputCost * cacheCreationRatio),
-      },
+      quotaCost,
+      cost: usdEquivalent(quotaCost, usdExchangeRate),
       endpoints: [...endpoints].sort(),
       groups: [...groups].sort(),
       capability: capability(candidate, id),
     };
   });
   return {
-    schemaVersion: 2,
-    sources: { pricing: PRICING_URL, capabilities: MODELS_DEV_URL },
+    schemaVersion: 3,
+    sources: {
+      pricing: PRICING_URL,
+      status: STATUS_URL,
+      topUpPolicy: TOP_UP_POLICY_URL,
+      capabilities: MODELS_DEV_URL,
+    },
+    billing: {
+      cnyPerQuota: CNY_PER_QUOTA,
+      usdExchangeRate,
+    },
     models,
   };
 }
@@ -145,11 +181,12 @@ async function fetchJson(fetchImpl, url, label) {
 
 export async function expectedCatalog({ fetchImpl = fetch, readFileImpl = readFile } = {}) {
   const mapping = await readMapping({ readFileImpl });
-  const [pricing, modelsDev] = await Promise.all([
+  const [pricing, status, modelsDev] = await Promise.all([
     fetchJson(fetchImpl, PRICING_URL, "Public pricing endpoint"),
+    fetchJson(fetchImpl, STATUS_URL, "Public status endpoint"),
     fetchJson(fetchImpl, MODELS_DEV_URL, "models.dev endpoint"),
   ]);
-  return buildCatalog(pricing, modelsDev, mapping);
+  return buildCatalog(pricing, status, modelsDev, mapping);
 }
 
 export async function syncCatalog({

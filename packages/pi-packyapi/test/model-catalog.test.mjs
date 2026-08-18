@@ -5,9 +5,12 @@ import {
   buildCatalog,
   checkAuthenticatedVisibility,
   checkCatalog,
+  CNY_PER_QUOTA,
   MODELS_DEV_URL,
   MODELS_URL,
   PRICING_URL,
+  STATUS_URL,
+  TOP_UP_POLICY_URL,
   serializeCatalog,
   syncCatalog,
 } from "../scripts/model-catalog.mjs";
@@ -31,6 +34,7 @@ const pricing = {
     },
   ],
 };
+const status = { data: { usd_exchange_rate: 7 } };
 const modelsDev = {
   canonical: {
     models: {
@@ -45,7 +49,7 @@ const modelsDev = {
     },
   },
 };
-const expected = buildCatalog(pricing, modelsDev, testMapping);
+const expected = buildCatalog(pricing, status, modelsDev, testMapping);
 const files = new Map([
   ["model-mapping.json", JSON.stringify(testMapping)],
   ["models.json", serializeCatalog(expected)],
@@ -53,12 +57,31 @@ const files = new Map([
 const readExpected = async (url) => files.get(String(url).split("/").pop());
 const publicFetch = async (url) => {
   if (url === PRICING_URL) return Response.json(pricing);
+  if (url === STATUS_URL) return Response.json(status);
   if (url === MODELS_DEV_URL) return Response.json(modelsDev);
   throw new Error(`Unexpected URL: ${url}`);
 };
 
-test("generation separates PackyAPI facts from models.dev capabilities", () => {
-  assert.deepEqual(expected.models[0].cost, { input: 4, output: 12, cacheRead: 1, cacheWrite: 5 });
+test("generation separates PackyAPI billing facts from models.dev capabilities", () => {
+  assert.deepEqual(expected.models[0].quotaCost, {
+    input: 4,
+    output: 12,
+    cacheRead: 1,
+    cacheWrite: 5,
+  });
+  assert.deepEqual(expected.models[0].cost, {
+    input: 0.571428571429,
+    output: 1.71428571429,
+    cacheRead: 0.142857142857,
+    cacheWrite: 0.714285714286,
+  });
+  assert.deepEqual(expected.billing, { cnyPerQuota: CNY_PER_QUOTA, usdExchangeRate: 7 });
+  assert.deepEqual(expected.sources, {
+    pricing: PRICING_URL,
+    status: STATUS_URL,
+    topUpPolicy: TOP_UP_POLICY_URL,
+    capabilities: MODELS_DEV_URL,
+  });
   assert.equal(expected.models[0].api, "openai-responses");
   assert.deepEqual(expected.models[0].groups, ["a", "b"]);
   assert.deepEqual(expected.models[0].capability.input, ["text", "image"]);
@@ -75,7 +98,7 @@ test("generation separates PackyAPI facts from models.dev capabilities", () => {
   assert.doesNotMatch(serializeCatalog(expected), /generatedAt/);
 });
 
-test("models.dev cost is discarded even when maliciously large", () => {
+test("models.dev cost cannot affect raw quota or converted USD cost", () => {
   const poisoned = structuredClone(modelsDev);
   poisoned.canonical.models["upstream-a"].cost = {
     input: Number.MAX_VALUE,
@@ -83,13 +106,14 @@ test("models.dev cost is discarded even when maliciously large", () => {
     cache_read: 7,
     cache_write: Number.MAX_VALUE,
   };
-  assert.deepEqual(
-    buildCatalog(pricing, poisoned, testMapping).models[0].cost,
-    expected.models[0].cost,
-  );
+  const poisonedModel = buildCatalog(pricing, status, poisoned, testMapping).models[0];
+  assert.deepEqual(poisonedModel.quotaCost, expected.models[0].quotaCost);
+  assert.deepEqual(poisonedModel.cost, expected.models[0].cost);
   const packyCacheWrite = structuredClone(pricing);
   packyCacheWrite.data[0].cache_creation_ratio_5m = 2;
-  assert.equal(buildCatalog(packyCacheWrite, poisoned, testMapping).models[0].cost.cacheWrite, 8);
+  const changed = buildCatalog(packyCacheWrite, status, poisoned, testMapping).models[0];
+  assert.equal(changed.quotaCost.cacheWrite, 8);
+  assert.equal(changed.cost.cacheWrite, 1.14285714286);
 });
 
 test("endpoint priority is Responses, completions, then Anthropic", () => {
@@ -97,25 +121,41 @@ test("endpoint priority is Responses, completions, then Anthropic", () => {
     data: [{ ...pricing.data[0], supported_endpoint_types: endpoints }],
   });
   assert.equal(
-    buildCatalog(withEndpoints(["anthropic", "openai"]), modelsDev, testMapping).models[0].api,
+    buildCatalog(withEndpoints(["anthropic", "openai"]), status, modelsDev, testMapping).models[0]
+      .api,
     "openai-completions",
   );
   assert.equal(
-    buildCatalog(withEndpoints(["anthropic"]), modelsDev, testMapping).models[0].api,
+    buildCatalog(withEndpoints(["anthropic"]), status, modelsDev, testMapping).models[0].api,
     "anthropic-messages",
   );
   assert.throws(
-    () => buildCatalog(withEndpoints(["other"]), modelsDev, testMapping),
+    () => buildCatalog(withEndpoints(["other"]), status, modelsDev, testMapping),
     /no supported Pi endpoint/,
   );
 });
 
 test("explicit mapping is required and missing capabilities fail", () => {
   assert.throws(
-    () => buildCatalog({ data: [] }, modelsDev, testMapping),
+    () => buildCatalog({ data: [] }, status, modelsDev, testMapping),
     /missing supported model/,
   );
-  assert.throws(() => buildCatalog(pricing, {}, testMapping), /missing mapped capability/);
+  assert.throws(() => buildCatalog(pricing, status, {}, testMapping), /missing mapped capability/);
+});
+
+test("exchange rate must be finite and positive", () => {
+  for (const value of [0, -1, Number.POSITIVE_INFINITY, "7", undefined]) {
+    assert.throws(
+      () => buildCatalog(pricing, { data: { usd_exchange_rate: value } }, modelsDev, testMapping),
+      /invalid usd_exchange_rate/,
+    );
+  }
+  const quotaFivePricing = structuredClone(pricing);
+  quotaFivePricing.data[0].model_ratio = 2.5;
+  assert.equal(
+    buildCatalog(quotaFivePricing, status, modelsDev, testMapping).models[0].cost.input,
+    0.714285714286,
+  );
 });
 
 test("sync deterministically writes combined source metadata", async () => {
@@ -129,8 +169,18 @@ test("sync deterministically writes combined source metadata", async () => {
   assert.equal(serializeCatalog(expected), serializeCatalog(expected));
 });
 
-test("check detects pricing and capability drift", async () => {
+test("check detects pricing, exchange-rate, and capability drift", async () => {
   await checkCatalog({ fetchImpl: publicFetch, readFileImpl: readExpected });
+
+  const changedStatusFetch = async (url) => {
+    if (url === STATUS_URL) return Response.json({ data: { usd_exchange_rate: 6.5 } });
+    return publicFetch(url);
+  };
+  await assert.rejects(
+    checkCatalog({ fetchImpl: changedStatusFetch, readFileImpl: readExpected }),
+    /catalog is stale.*models:sync/s,
+  );
+
   const stale = structuredClone(expected);
   stale.models[0].capability.contextWindow = 9;
   const staleRead = async (url) =>
