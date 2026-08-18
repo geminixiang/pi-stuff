@@ -254,17 +254,19 @@ interface JoinOptions {
 	displayName: string;
 }
 
-function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejected", message?: string) => void): GameSession {
+function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejected" | "hostDisconnected", message?: string) => void): GameSession {
 	const emitter = makeEmitter();
 	let lastState: PublicTableState | undefined;
 	let mySeatIndex: number | null = null;
 	let chatLog: ChatMessage[] = [];
+	let welcomed = false;
 
 	const client = new RoomClient({
 		url: opts.url,
 		playerId: opts.myId,
 		displayName: opts.displayName,
 		onWelcome: (info) => {
+			welcomed = true;
 			mySeatIndex = info.seatIndex;
 			onEvent("welcome");
 			emitter.emit();
@@ -282,7 +284,8 @@ function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejec
 			emitter.emit();
 		},
 		onRejected: (reason, message) => onEvent("rejected", message ?? reason),
-		onClose: () => onEvent("rejected", "Connection closed"),
+		// ponytail: welcomed==false means we never connected; welcomed==true means host went away mid-game.
+		onClose: () => onEvent(welcomed ? "hostDisconnected" : "rejected", welcomed ? undefined : "Connection closed"),
 	});
 
 	const emptyState: PublicTableState = {
@@ -690,8 +693,16 @@ export default function pokerExtension(pi: ExtensionAPI) {
 			}
 
 			if (sub === "host") {
+				// ponytail: no native y/n prompt in this TUI; require an explicit --i-know flag instead of building a modal.
+				if (!args.includes("--i-know")) {
+					ctx.ui.notify(
+						"🎴 Friends-only poker. YOU (the host) can technically see everyone's hole cards — this is not cheat-proof. Do not use for money. Re-run with `/poker host [port] --i-know` to confirm.",
+						"warning",
+					);
+					return;
+				}
 				closeSession(ctx);
-				const port = Number(args[1]) || DEFAULT_PORT;
+				const port = Number(args[1] && !args[1].startsWith("--") ? args[1] : "") || DEFAULT_PORT;
 				session = createHostSession(
 					{
 						myId,
@@ -718,9 +729,13 @@ export default function pokerExtension(pi: ExtensionAPI) {
 				}
 				closeSession(ctx);
 				const url = address.startsWith("ws://") || address.startsWith("wss://") ? address : `ws://${address}`;
+				ctx.ui.notify(`Joining ${address} — the host's machine runs the game and can see your hole cards. Only join hosts you trust.`, "info");
 				session = createJoinSession({ url, myId, displayName: hostname }, (kind, message) => {
 					if (kind === "rejected") {
 						ctx.ui.notify(`Could not join: ${message ?? "unknown error"}`, "error");
+						closeSession(ctx);
+					} else if (kind === "hostDisconnected") {
+						ctx.ui.notify("Host went offline — this hand ended and any bets are returned. Room closed.", "warning");
 						closeSession(ctx);
 					}
 				});
