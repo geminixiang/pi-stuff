@@ -1,9 +1,46 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import mapping from "../catalog/model-mapping.json" with { type: "json" };
-import extension, { createPackyAPIProvider, PACKYAPI_MODELS } from "../extensions/index.ts";
+import extension, {
+  createPackyAPIProvider,
+  PACKYAPI_MODELS,
+  sanitizePackyAPIPayload,
+} from "../extensions/index.ts";
 
 const supportedIds = mapping.models.map(({ id }) => id);
+
+test("PackyAPI payload sanitizer removes only unsupported regex lookarounds", () => {
+  const payload = {
+    tools: [
+      {
+        parameters: {
+          properties: {
+            negativeAhead: { type: "string", pattern: "^(?!/).+$" },
+            positiveAhead: { type: "string", pattern: "^(?=/).+$" },
+            positiveBehind: { type: "string", pattern: "(?<=/)safe$" },
+            negativeBehind: { type: "string", pattern: "(?<!/)safe$" },
+            safe: { type: "string", pattern: "^[a-z0-9/._-]+$" },
+            escaped: { type: "string", pattern: String.raw`^\(\?=literal$` },
+            characterClass: { type: "string", pattern: "^[a-z(?!]+$" },
+          },
+        },
+      },
+    ],
+  };
+  const sanitized = sanitizePackyAPIPayload(payload);
+  const original = payload.tools[0].parameters.properties;
+  const properties = sanitized.tools[0].parameters.properties;
+  assert.equal(properties.negativeAhead.pattern, undefined);
+  assert.equal(properties.positiveAhead.pattern, undefined);
+  assert.equal(properties.positiveBehind.pattern, undefined);
+  assert.equal(properties.negativeBehind.pattern, undefined);
+  assert.equal(properties.safe.pattern, "^[a-z0-9/._-]+$");
+  assert.equal(properties.escaped.pattern, String.raw`^\(\?=literal$`);
+  assert.equal(properties.characterClass.pattern, "^[a-z(?!]+$");
+  assert.equal(original.negativeAhead.pattern, "^(?!/).+$");
+  assert.notEqual(sanitized, payload);
+  assert.equal(sanitizePackyAPIPayload(payload.tools[0].parameters.properties.safe), original.safe);
+});
 
 test("provider exposes every explicitly mapped model with endpoint-selected APIs", () => {
   assert.deepEqual(

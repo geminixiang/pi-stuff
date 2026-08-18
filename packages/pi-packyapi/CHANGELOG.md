@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 2026-08-19
+
+- Remove unsupported regex lookaround constraints from PackyAPI Responses tool schemas while preserving ordinary patterns.
+
 ## 0.2.0 - 2026-08-19
 
 - Expand the supported catalog from four to 14 explicitly mapped and transport-validated PackyAPI models.
