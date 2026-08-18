@@ -16,6 +16,7 @@ on:
           - pi-mermaid
           - pi-agent-team
           - pi-native-web-search
+          - pi-packyapi
 
 permissions:
   contents: read
@@ -47,7 +48,7 @@ jobs:
           fi
 
           case "$package" in
-            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid|pi-agent-team|pi-native-web-search) ;;
+            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid|pi-agent-team|pi-native-web-search|pi-packyapi) ;;
             *) echo "Unsupported package: $package" >&2; exit 1 ;;
           esac
 

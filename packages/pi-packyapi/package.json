@@ -1,0 +1,55 @@
+{
+  "name": "@geminixiang/pi-packyapi",
+  "version": "0.1.0",
+  "description": "PackyAPI provider extension for Pi",
+  "keywords": [
+    "packyapi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-packyapi"
+  },
+  "files": [
+    "catalog",
+    "extensions",
+    "scripts",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "models:check": "node scripts/check-models.mjs",
+    "test": "node --import tsx --test test/provider.test.ts test/model-catalog.test.mjs",
+    "models:sync": "node scripts/sync-models.mjs",
+    "models:check-auth": "node scripts/check-models-auth.mjs",
+    "smoke:pi": "node scripts/smoke-pi.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.82.1",
+    "@earendil-works/pi-coding-agent": ">=0.82.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  }
+}
