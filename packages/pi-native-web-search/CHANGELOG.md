@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Prefer the provider and model active in the current Pi session.
+- Resolve custom active providers by their configured ID instead of exposing an internal provider name.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added

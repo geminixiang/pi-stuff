@@ -1,6 +1,6 @@
 ---
 name: native-web-search
-description: "Search the web through Pi's configured OpenAI Codex or Anthropic account. Use for quick internet research that needs concise findings and full source URLs."
+description: "Search the web through the provider and model active in the current Pi session. Use for quick internet research that needs concise findings and full source URLs."
 license: Apache-2.0
 metadata:
   author: Armin Ronacher (mitsuhiko)
@@ -31,14 +31,14 @@ cd "<native-web-search skill directory shown by Pi>" && \
 
 Optional flags:
 
-- `--provider agent-model|openai-codex|anthropic`
+- `--provider <provider-id>` to intentionally override the current Pi session
 - `--model <model-id>`
 - `--timeout <milliseconds>` (minimum 1000; default 120000)
 - `--json`
 
-The script follows the current Pi session's `PI_PROVIDER` and `PI_MODEL` when available. It supports `agent-model` through its `/v1/responses` gateway and also supports direct `openai-codex` and `anthropic` native-search transports. Unsupported custom providers fail explicitly rather than silently using unrelated credentials. Pass `--provider` only when you intentionally want to override the active provider.
+The script uses the current Pi session's `PI_PROVIDER` and `PI_MODEL` by default. Built-in `openai-codex` and `anthropic` providers use their native web-search transports. Other active providers are looked up by their actual ID in `models.json` and use an OpenAI Responses-compatible `/responses` endpoint. Pass `--provider` only when you intentionally want to override the current session.
 
-For `agent-model`, the script reads Pi's provider base URL, configured model, and API-key reference from `models.json`; ChatGPT OAuth remains owned and refreshed by the gateway. For direct providers, the script reuses credentials in Pi's `auth.json`. It prefers `@earendil-works/pi-ai` but retains compatibility with legacy `@mariozechner/pi-ai` installations.
+For configured providers, the script reads the provider's base URL, model, and API-key reference from `models.json`. For direct providers, it reuses credentials in Pi's `auth.json`. It prefers `@earendil-works/pi-ai` but retains compatibility with legacy `@mariozechner/pi-ai` installations.
 
 If automatic module discovery fails, set:
 

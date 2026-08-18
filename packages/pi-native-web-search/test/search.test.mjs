@@ -12,7 +12,7 @@ import {
 	parseResponsesText,
 	pickFastModel,
 	pickProvider,
-	resolveAgentModel,
+	resolveConfiguredProvider,
 	resolveCodexUrl,
 	resolveConfigValue,
 	resolveResponsesUrl,
@@ -30,40 +30,30 @@ test("parseArgs parses positional query and options", () => {
 	});
 });
 
-test("provider normalization and selection follow explicit, settings, then auth order", () => {
+test("provider selection prefers explicit override, then the active Pi session", () => {
 	assert.equal(normalizeProvider("Claude"), "anthropic");
 	assert.equal(normalizeProvider("openai"), "openai-codex");
-	assert.equal(normalizeProvider("agent-model"), "agent-model");
-	assert.equal(pickProvider(undefined, "agent-model", { defaultProvider: "openai-codex" }, {}), "agent-model");
-	assert.equal(pickProvider("anthropic", "agent-model", { defaultProvider: "openai-codex" }, {}), "anthropic");
+	assert.equal(normalizeProvider("openai-compatible"), undefined);
+	assert.equal(normalizeProvider("custom-gateway"), undefined);
+	assert.equal(pickProvider(undefined, "custom-gateway", { defaultProvider: "openai-codex" }, {}), "custom-gateway");
+	assert.equal(pickProvider("anthropic", "custom-gateway", { defaultProvider: "openai-codex" }, {}), "anthropic");
 	assert.equal(pickProvider(undefined, "codex", { defaultProvider: "anthropic" }, {}), "openai-codex");
-	assert.equal(pickProvider(undefined, undefined, { defaultProvider: "codex" }, { anthropic: {} }), "openai-codex");
+	assert.equal(pickProvider(undefined, undefined, { defaultProvider: "custom-gateway" }, {}), "custom-gateway");
 	assert.equal(pickProvider(undefined, undefined, {}, { anthropic: {} }), "anthropic");
 });
 
-test("unsupported active provider never falls back to unrelated credentials", () => {
-	assert.throws(
-		() => pickProvider(undefined, "custom-gateway", {}, { "openai-codex": {} }),
-		/Active provider 'custom-gateway'.*refusing to fall back/,
-	);
-	assert.throws(
-		() => pickProvider(undefined, undefined, { defaultProvider: "custom-gateway" }, { "openai-codex": {} }),
-		/Default provider 'custom-gateway'.*refusing to fall back/,
-	);
-	assert.throws(() => pickProvider("custom-gateway", undefined, {}, {}), /Unsupported provider/);
-});
-
-test("agent-model resolves active model, gateway URL, and $ENV API key", () => {
-	const previous = process.env.TEST_AGENT_MODEL_TOKEN;
-	process.env.TEST_AGENT_MODEL_TOKEN = "gateway-token";
+test("configured provider resolves the active model, gateway URL, and $ENV API key", () => {
+	const previous = process.env.TEST_CONFIGURED_PROVIDER_TOKEN;
+	process.env.TEST_CONFIGURED_PROVIDER_TOKEN = "gateway-token";
 	try {
-		const model = resolveAgentModel(
+		const model = resolveConfiguredProvider(
+			"custom-gateway",
 			{},
 			{
 				providers: {
-					"agent-model": {
+					"custom-gateway": {
 						baseUrl: "http://localhost:8080/v1",
-						apiKey: "$TEST_AGENT_MODEL_TOKEN",
+						apiKey: "$TEST_CONFIGURED_PROVIDER_TOKEN",
 						models: [{ id: "gpt-5.6-sol" }],
 					},
 				},
@@ -76,10 +66,10 @@ test("agent-model resolves active model, gateway URL, and $ENV API key", () => {
 			apiKey: "gateway-token",
 		});
 		assert.equal(resolveResponsesUrl(model.baseUrl), "http://localhost:8080/v1/responses");
-		assert.equal(resolveConfigValue("$TEST_AGENT_MODEL_TOKEN"), "gateway-token");
+		assert.equal(resolveConfigValue("$TEST_CONFIGURED_PROVIDER_TOKEN"), "gateway-token");
 	} finally {
-		if (previous === undefined) delete process.env.TEST_AGENT_MODEL_TOKEN;
-		else process.env.TEST_AGENT_MODEL_TOKEN = previous;
+		if (previous === undefined) delete process.env.TEST_CONFIGURED_PROVIDER_TOKEN;
+		else process.env.TEST_CONFIGURED_PROVIDER_TOKEN = previous;
 	}
 });
 

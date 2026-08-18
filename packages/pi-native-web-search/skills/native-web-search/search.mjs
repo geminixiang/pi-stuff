@@ -72,7 +72,7 @@ function parseArgs(argv) {
 
 function usage() {
 	return `Usage:
-  node search.mjs "<query>" [--purpose "<why>"] [--provider agent-model|openai-codex|anthropic] [--model <id>] [--json]
+  node search.mjs "<query>" [--purpose "<why>"] [--provider <provider-id>] [--model <id>] [--json]
 
 Examples:
   node search.mjs "latest python release" --purpose "update dependency notes"
@@ -122,43 +122,25 @@ function getAgentDir() {
 function normalizeProvider(provider) {
 	if (!provider) return undefined;
 	const p = String(provider).toLowerCase().trim();
-	if (p === "agent-model" || p === "agentmodel") return "agent-model";
-	if (p.includes("anthropic") || p.includes("claude")) return "anthropic";
-	if (p.includes("codex") || p === "openai" || p.startsWith("openai")) return "openai-codex";
+	if (p === "anthropic" || p === "claude") return "anthropic";
+	if (p === "openai-codex" || p === "codex" || p === "openai") return "openai-codex";
 	return undefined;
 }
 
+function providerId(value) {
+	if (typeof value !== "string" || !value.trim()) return undefined;
+	return normalizeProvider(value) || value.trim();
+}
+
 function pickProvider(argProvider, activeProvider, settings, auth) {
-	if (argProvider) {
-		const forced = normalizeProvider(argProvider);
-		if (!forced) {
-			throw new Error(`Unsupported provider '${argProvider}'. Pass --provider agent-model|openai-codex|anthropic`);
-		}
-		return forced;
-	}
-
-	if (activeProvider) {
-		const active = normalizeProvider(activeProvider);
-		if (active) return active;
-		throw new Error(
-			`Active provider '${activeProvider}' does not expose a supported native web-search transport. ` +
-				"Pass --provider agent-model|openai-codex|anthropic explicitly; refusing to fall back to unrelated credentials.",
-		);
-	}
-
-	if (settings?.defaultProvider) {
-		const configured = normalizeProvider(settings.defaultProvider);
-		if (configured) return configured;
-		throw new Error(
-			`Default provider '${settings.defaultProvider}' does not expose a supported native web-search transport. ` +
-				"Pass --provider agent-model|openai-codex|anthropic explicitly; refusing to fall back to unrelated credentials.",
-		);
-	}
+	if (argProvider) return providerId(argProvider);
+	if (activeProvider) return providerId(activeProvider);
+	if (settings?.defaultProvider) return providerId(settings.defaultProvider);
 
 	if (auth?.["openai-codex"]) return "openai-codex";
 	if (auth?.anthropic) return "anthropic";
 
-	throw new Error("Could not determine provider. Pass --provider agent-model|openai-codex|anthropic");
+	throw new Error("Could not determine a provider from the current Pi session, settings, or credentials.");
 }
 
 function decodeJwtAccountId(jwt) {
@@ -429,23 +411,23 @@ function buildSystemPrompt() {
 
 function resolveResponsesUrl(baseUrl) {
 	const normalized = String(baseUrl || "").replace(/\/+$/, "");
-	if (!normalized) throw new Error("agent-model has no configured base URL.");
+	if (!normalized) throw new Error("The configured provider has no base URL.");
 	return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
 }
 
-function resolveAgentModel(settings, modelsConfig, requestedModel) {
-	const providerConfig = modelsConfig?.providers?.["agent-model"];
+function resolveConfiguredProvider(provider, settings, modelsConfig, requestedModel) {
+	const providerConfig = modelsConfig?.providers?.[provider];
 	if (!providerConfig) {
-		throw new Error("No agent-model provider configuration found in Pi models.json.");
+		throw new Error(`Provider '${provider}' is not configured in Pi models.json.`);
 	}
 	const modelId = requestedModel || settings?.defaultModel;
-	if (!modelId) throw new Error("Could not determine the active agent-model model ID.");
+	if (!modelId) throw new Error(`Could not determine the active model ID for provider '${provider}'.`);
 	const configured = Array.isArray(providerConfig.models)
 		? providerConfig.models.find((model) => model?.id === modelId)
 		: undefined;
-	if (!configured) throw new Error(`Model agent-model/${modelId} is not configured in Pi models.json.`);
+	if (!configured) throw new Error(`Model ${provider}/${modelId} is not configured in Pi models.json.`);
 	const apiKey = resolveConfigValue(providerConfig.apiKey);
-	if (!apiKey) throw new Error("agent-model API key is empty or unresolved.");
+	if (!apiKey) throw new Error(`API key for provider '${provider}' is empty or unresolved.`);
 	return { id: modelId, baseUrl: providerConfig.baseUrl, apiKey };
 }
 
@@ -647,8 +629,8 @@ async function main() {
 	const provider = pickProvider(args.provider, process.env.PI_PROVIDER, settings, auth);
 	let model;
 	let text;
-	if (provider === "agent-model") {
-		model = resolveAgentModel(settings, modelsConfig, args.model || process.env.PI_MODEL);
+	if (provider !== "openai-codex" && provider !== "anthropic") {
+		model = resolveConfiguredProvider(provider, settings, modelsConfig, args.model || process.env.PI_MODEL);
 		text = await runResponsesSearch({
 			provider,
 			model: model.id,
@@ -724,7 +706,7 @@ export {
 	parseResponsesText,
 	pickFastModel,
 	pickProvider,
-	resolveAgentModel,
+	resolveConfiguredProvider,
 	resolveCodexUrl,
 	resolveConfigValue,
 	resolveResponsesUrl,
