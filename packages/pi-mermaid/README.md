@@ -1,5 +1,8 @@
 # pi-mermaid
 
+> [!IMPORTANT]
+> **This package is no longer maintained.** Pi `0.84.0` and later render Mermaid code blocks natively, so this extension is no longer necessary. Upgrade Pi and use the built-in renderer instead. Mermaid rendering can be configured in `/settings` or with the `markdown.mermaid` setting (`"off"`, `"final"`, or `"streaming"`). Existing installations may continue to work, but no further updates are planned.
+
 A [pi](https://github.com/earendil-works/pi) extension that renders Mermaid diagrams as Unicode art directly in the terminal.
 
 ![pi-mermaid rendering Chinese Mermaid diagrams in the terminal](assets/pi-mermaid-demo.png)
