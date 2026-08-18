@@ -45,6 +45,7 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
   const seen = new Map<string, TeamTurn[]>();
   class CoordinatingAgent {
     readonly sessionId = crypto.randomUUID();
+    private outcome?: string;
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       const turns = seen.get(this.member.id) ?? [];
@@ -55,12 +56,12 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
           { type: "claim", resource: "leader" },
           { type: "say", body: `candidate ${this.member.id}` },
         ];
-      const outcome = turn.observations.find(
+      this.outcome ??= turn.observations.find(
         (message) =>
           message.from === "runtime" && /^CLAIM_(ACQUIRED|REJECTED)/.test(message.body),
       )?.body;
-      assert.match(outcome ?? "", /^CLAIM_(ACQUIRED|REJECTED)/);
-      return [{ type: "finish", summary: outcome! }];
+      assert.match(this.outcome ?? "", /^CLAIM_(ACQUIRED|REJECTED)/);
+      return [{ type: "finish", summary: this.outcome! }];
     }
   }
   const members = [

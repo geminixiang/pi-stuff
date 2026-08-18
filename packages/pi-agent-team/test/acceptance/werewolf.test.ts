@@ -176,7 +176,7 @@ test("eight opaque players complete werewolf through messages while runtime know
   const result = await new TeamRuntime(
     "Play a complete hidden-role werewolf game using only team messages",
     new Map(all.map((agent) => [agent.member.id, agent])),
-    { maxTurns: 300 },
+    { maxTurns: 300, waveConcurrency: 1 },
   ).run({ channel: { kind: "direct", memberId: moderator.id }, body: "START" });
 
   assert.equal(result.settlement.kind, "completed");
