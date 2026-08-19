@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyAction, computeSidePots, createTable, legalActions, seatPlayer, startHand } from "../src/engine/table.ts";
+import { applyAction, computeSidePots, createTable, forceFold, legalActions, seatPlayer, startHand } from "../src/engine/table.ts";
 import type { Seat, TableState } from "../src/engine/types.ts";
 
 function seat(id: string, stack: number, committed = 0, status: Seat["status"] = "active"): Seat {
@@ -86,6 +86,35 @@ test("calling all-in for less than the current bet does not reopen betting", () 
 	assert.equal(a.committed, 15);
 	assert.equal(next.currentBet, 30, "current bet is unchanged by a short call");
 	assert.equal(next.lastAggressorIndex, 1, "short all-in call is not an aggressive action");
+});
+
+test("forced fold settles a heads-up hand when the current actor disconnects", () => {
+	const state = baseState([seat("leaver", 90, 10), seat("winner", 80, 20)], {
+		toActIndex: 0,
+		currentBet: 20,
+	});
+	const next = forceFold(state, 0);
+
+	assert.equal(next.street, "showdown");
+	assert.equal(next.toActIndex, null);
+	assert.equal(next.seats[0]?.status, "folded");
+	assert.equal(next.seats[1]?.stack, 110, "remaining player receives both committed stacks");
+	assert.equal(next.log.at(-2), "leaver folds");
+});
+
+test("forced fold settles a heads-up hand when an out-of-turn player disconnects", () => {
+	const state = baseState([seat("actor", 90, 10), seat("leaver", 80, 20)], {
+		toActIndex: 0,
+		currentBet: 20,
+	});
+	const next = forceFold(state, 1);
+
+	assert.equal(next.street, "showdown");
+	assert.equal(next.toActIndex, null);
+	assert.equal(next.seats[1]?.status, "folded");
+	assert.equal(next.seats[0]?.stack, 110, "current actor wins the matched pot without taking a stale turn");
+	assert.equal(next.seats[1]?.stack, 90, "the disconnected player receives their unmatched excess back");
+	assert.equal(next.log.at(-2), "leaver folds");
 });
 
 test("computeSidePots splits a main pot and a side pot for an uneven all-in", () => {

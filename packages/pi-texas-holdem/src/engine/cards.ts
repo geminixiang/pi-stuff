@@ -1,3 +1,4 @@
+import { secureRandom } from "./random.ts";
 import type { Card, Rank, Suit } from "./types.ts";
 
 export const SUITS: Suit[] = ["s", "h", "d", "c"];
@@ -51,10 +52,14 @@ export function createDeck(): Card[] {
 }
 
 /** Fisher-Yates shuffle. Returns a new array; does not mutate the input. */
-export function shuffleDeck(deck: Card[], rng: () => number = Math.random): Card[] {
+export function shuffleDeck(deck: Card[], rng: () => number = secureRandom): Card[] {
 	const result = deck.slice();
 	for (let i = result.length - 1; i > 0; i--) {
-		const j = Math.floor(rng() * (i + 1));
+		const random = rng();
+		if (!Number.isFinite(random) || random < 0 || random >= 1) {
+			throw new RangeError("Random source must return a finite number in [0, 1)");
+		}
+		const j = Math.floor(random * (i + 1));
 		[result[i], result[j]] = [result[j] as Card, result[i] as Card];
 	}
 	return result;

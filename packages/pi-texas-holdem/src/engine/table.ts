@@ -1,4 +1,5 @@
 import { createDeck, shuffleDeck } from "./cards.ts";
+import { secureRandom } from "./random.ts";
 import { compareEvaluations, evaluateBestHand } from "./evaluator.ts";
 import type { Action, Card, HandResult, LegalActions, Pot, PotAward, Seat, TableState } from "./types.ts";
 
@@ -55,6 +56,32 @@ export function leaveSeat(state: TableState, seatIndex: number): TableState {
 	return { ...state, seats };
 }
 
+/**
+ * Forces an active seat to fold without requiring it to be that seat's turn.
+ * Used by authoritative runtimes when a player disconnects. The transition
+ * settles the hand, advances the street, or preserves the current actor using
+ * the same engine rules as a voluntary fold.
+ */
+export function forceFold(state: TableState, seatIndex: number): TableState {
+	const seat = state.seats[seatIndex];
+	if (!seat || seat.status !== "active" || state.street === "showdown") return state;
+
+	const seats = state.seats.map((candidate, index) =>
+		index === seatIndex && candidate ? { ...candidate, status: "folded" as const } : candidate,
+	);
+	let next: TableState = { ...state, seats, log: [...state.log, `${seat.displayName} folds`] };
+
+	if (contenders(next).length <= 1) return finishHandByFold(next);
+	if (bettingRoundComplete(next)) {
+		if (next.street === "river") return runShowdown(next);
+		return dealStreet(next);
+	}
+	if (state.toActIndex === seatIndex) {
+		next = { ...next, toActIndex: nextActingSeatIndex(seats, seatIndex) };
+	}
+	return next;
+}
+
 function occupiedCount(state: TableState): number {
 	return state.seats.filter((s) => s && !s.sittingOut && s.stack > 0).length;
 }
@@ -88,7 +115,7 @@ function contenders(state: TableState): { index: number; seat: Seat }[] {
 		.filter((entry): entry is { index: number; seat: Seat } => !!entry.seat && entry.seat.status !== "folded");
 }
 
-export function startHand(state: TableState, rng: () => number = Math.random): TableState {
+export function startHand(state: TableState, rng: () => number = secureRandom): TableState {
 	if (occupiedCount(state) < 2) throw new Error("Need at least 2 seated players with chips to start a hand");
 
 	const dealerIndex =
@@ -192,6 +219,9 @@ function computeSidePots(seats: Seat[]): Pot[] {
 		const amount = (level - prev) * layer.length;
 		if (amount > 0) {
 			const eligible = layer.filter((s) => s.status !== "folded").map((s) => s.id);
+			// A contribution above every opponent's commitment is uncalled and
+			// returns to its sole contributor, even if that seat just folded.
+			if (eligible.length === 0 && layer.length === 1) eligible.push((layer[0] as Seat).id);
 			pots.push({ amount, eligible });
 		}
 		prev = level;

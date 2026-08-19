@@ -11,8 +11,8 @@ test("strips OSC sequences (e.g. terminal title injection)", () => {
 	assert.equal(sanitizeChatText("\x1B]0;evil title\x07hi"), "hi");
 });
 
-test("strips other control characters but keeps normal punctuation", () => {
-	assert.equal(sanitizeChatText("go\x07od nice hand!"), "good nice hand!");
+test("strips other C0/C1 control characters but keeps normal punctuation", () => {
+	assert.equal(sanitizeChatText("go\x07od\u0085 nice hand!"), "good nice hand!");
 });
 
 test("collapses embedded newlines into spaces instead of allowing multi-line output", () => {

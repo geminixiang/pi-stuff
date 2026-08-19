@@ -13,7 +13,7 @@ export interface ChatMessage {
 }
 
 export type ClientMessage =
-	| { type: "hello"; protocolVersion: number; playerId: string; displayName: string }
+	| { type: "hello"; protocolVersion: number; playerId: string; displayName: string; creatorCapability?: string }
 	| { type: "action"; action: Action }
 	| { type: "startHand" }
 	| { type: "chat"; text: string }

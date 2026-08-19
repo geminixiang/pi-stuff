@@ -12,6 +12,8 @@ export interface RoomClientOptions {
 	onChatMessage: (message: ChatMessage) => void;
 	onChatHistory: (messages: ChatMessage[]) => void;
 	onRejected: (reason: "roomFull" | "protocolMismatch" | "error", message?: string) => void;
+	/** Nonfatal server or socket error after the welcome handshake. */
+	onError?: (message: string) => void;
 	onClose: () => void;
 }
 
@@ -20,7 +22,10 @@ export class RoomClient {
 	seatIndex: number | null = null;
 
 	constructor(private readonly opts: RoomClientOptions) {
-		this.ws = new WebSocket(opts.url);
+		const url = new URL(opts.url);
+		const creatorCapability = url.searchParams.get("creator") ?? undefined;
+		url.searchParams.delete("creator");
+		this.ws = new WebSocket(url);
 		this.ws.on("open", () => {
 			this.ws.send(
 				encode({
@@ -28,16 +33,21 @@ export class RoomClient {
 					protocolVersion: PROTOCOL_VERSION,
 					playerId: opts.playerId,
 					displayName: opts.displayName,
+					...(creatorCapability ? { creatorCapability } : {}),
 				}),
 			);
 		});
 		this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
 		this.ws.on("close", () => opts.onClose());
-		this.ws.on("error", () => opts.onRejected("error", "Connection failed"));
+		this.ws.on("error", () => this.reportError("Connection failed"));
 	}
 
 	sendAction(action: Action): void {
 		this.ws.send(encode({ type: "action", action }));
+	}
+
+	startHand(): void {
+		this.ws.send(encode({ type: "startHand" }));
 	}
 
 	sendChat(text: string): void {
@@ -76,10 +86,18 @@ export class RoomClient {
 				this.opts.onRejected("protocolMismatch", `Host is running protocol v${message.hostVersion}`);
 				break;
 			case "error":
-				this.opts.onRejected("error", message.message);
+				this.reportError(message.message);
 				break;
 			case "pong":
 				break;
+		}
+	}
+
+	private reportError(message: string): void {
+		if (this.seatIndex === null) {
+			this.opts.onRejected("error", message);
+		} else {
+			this.opts.onError?.(message);
 		}
 	}
 }

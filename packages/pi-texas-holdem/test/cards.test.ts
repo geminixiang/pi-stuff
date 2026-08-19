@@ -19,6 +19,11 @@ test("shuffle is a pure permutation and does not mutate the input", () => {
 	);
 });
 
+test("shuffle rejects random sources outside the [0, 1) contract", () => {
+	assert.throws(() => shuffleDeck(createDeck(), () => 1), /\[0, 1\)/);
+	assert.throws(() => shuffleDeck(createDeck(), () => Number.NaN), /\[0, 1\)/);
+});
+
 test("formats cards with rank labels and suit glyphs", () => {
 	assert.equal(formatCard({ rank: 14, suit: "s" }), "A♠");
 	assert.equal(formatCard({ rank: 10, suit: "h" }), "10♥");

@@ -1,6 +1,5 @@
-import crypto from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
-import { applyAction, createTable, leaveSeat, seatPlayer, startHand } from "../engine/table.ts";
+import { applyAction, createTable, forceFold, leaveSeat, seatPlayer, startHand } from "../engine/table.ts";
 import type { Action, TableState } from "../engine/types.ts";
 import { redactStateFor } from "../engine/view.ts";
 import { type ChatMessage, decodeClientMessage, encode, PROTOCOL_VERSION } from "./protocol.ts";
@@ -19,6 +18,8 @@ export interface HostRoomOptions {
 	onStateChange: (state: TableState) => void;
 	onChatMessage?: (message: ChatMessage) => void;
 	onLog?: (line: string) => void;
+	createMessageId?: () => string;
+	now?: () => number;
 }
 
 interface Connection {
@@ -125,7 +126,13 @@ export class HostRoom {
 	}
 
 	private pushChat(seatIndex: number | null, displayName: string, text: string): void {
-		const message: ChatMessage = { id: crypto.randomUUID(), seatIndex, displayName, text, ts: Date.now() };
+		const message: ChatMessage = {
+			id: this.opts.createMessageId?.() ?? globalThis.crypto.randomUUID(),
+			seatIndex,
+			displayName,
+			text,
+			ts: this.opts.now?.() ?? Date.now(),
+		};
 		this.chatLog.push(message);
 		if (this.chatLog.length > CHAT_HISTORY_LIMIT) this.chatLog.shift();
 		this.opts.onChatMessage?.(message);
@@ -221,15 +228,10 @@ export class HostRoom {
 			this.connections.delete(conn);
 			const seat = this.state.seats[conn.seatIndex];
 			if (seat) {
-				// A player who disconnects mid-hand auto-folds if it was their turn;
-				// re-joining under the same connection isn't handled yet (v1 limitation).
-				if (this.state.toActIndex === conn.seatIndex && seat.status === "active") {
-					try {
-						this.applyLocalAction(conn.seatIndex, { type: "fold" });
-					} catch {
-						// hand may have already ended between the disconnect and this fold
-					}
-				}
+				// The engine owns forced-fold settlement for both in-turn and
+				// out-of-turn disconnects; the transport only removes the seat afterward.
+				this.state = forceFold(this.state, conn.seatIndex);
+				this.announceNewLog();
 				this.state = leaveSeat(this.state, conn.seatIndex);
 				this.log(`${seat.displayName} disconnected`);
 				this.pushChat(null, "table", `${seat.displayName} disconnected`);

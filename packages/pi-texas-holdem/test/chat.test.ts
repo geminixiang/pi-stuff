@@ -123,8 +123,10 @@ test("a newly joined client receives recent chat history", async () => {
 	}
 });
 
-test("rapid chat messages from the same client are rate-limited", async () => {
+test("rapid chat messages from the same client are rate-limited without rejecting the session", async () => {
 	const hostChat: ChatMessage[] = [];
+	const clientErrors: string[] = [];
+	let rejectionCount = 0;
 	const host = new HostRoom({
 		port: 0,
 		seatCount: 2,
@@ -139,7 +141,10 @@ test("rapid chat messages from the same client are rate-limited", async () => {
 
 	let guest: RoomClient | undefined;
 	try {
-		guest = await connect(port, "guest-id", "guest-machine");
+		guest = await connect(port, "guest-id", "guest-machine", {
+			onError: (message) => clientErrors.push(message),
+			onRejected: () => rejectionCount++,
+		});
 		guest.sendChat("first");
 		guest.sendChat("second, immediately after");
 		await new Promise((r) => setTimeout(r, 50));
@@ -147,8 +152,34 @@ test("rapid chat messages from the same client are rate-limited", async () => {
 		const fromGuest = hostChat.filter((m) => m.displayName === "guest-machine");
 		assert.equal(fromGuest.length, 1, "the second message within the rate-limit window is dropped");
 		assert.equal(fromGuest[0]?.text, "first");
+		assert.deepEqual(clientErrors, ["You're sending messages too fast"]);
+		assert.equal(rejectionCount, 0);
+		assert.equal(host.seatedCount(), 2, "a nonfatal chat error keeps the client seated");
 	} finally {
 		guest?.close();
+		host.close();
+	}
+});
+
+test("host chat identifiers and timestamps can use runtime-provided sources", () => {
+	const messages: ChatMessage[] = [];
+	const host = new HostRoom({
+		port: 0,
+		seatCount: 2,
+		smallBlind: 5,
+		bigBlind: 10,
+		startingStack: 500,
+		onStateChange: () => {},
+		onChatMessage: (message) => messages.push(message),
+		createMessageId: () => "message-id",
+		now: () => 123,
+	});
+	try {
+		host.seatLocalPlayer(0, "host", "host");
+		host.sendLocalChat(0, "hello");
+		assert.equal(messages.at(-1)?.id, "message-id");
+		assert.equal(messages.at(-1)?.ts, 123);
+	} finally {
 		host.close();
 	}
 });

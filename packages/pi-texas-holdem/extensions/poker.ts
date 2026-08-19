@@ -3,17 +3,17 @@ import os from "node:os";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type KeybindingsManager, type TUI } from "@earendil-works/pi-tui";
 import { formatCard } from "../src/engine/cards.ts";
-import { applyAction, createTable, legalActions as computeLegalActions, seatPlayer, startHand as engineStartHand } from "../src/engine/table.ts";
-import type { Action, LegalActions, Street, TableState } from "../src/engine/types.ts";
+import type { Action, Street } from "../src/engine/types.ts";
 import { centerOnRow, layoutTable, stampBlock } from "../src/engine/ring.ts";
 import type { PublicSeat, PublicTableState } from "../src/engine/view.ts";
-import { redactStateFor } from "../src/engine/view.ts";
-import { HostRoom } from "../src/net/host.ts";
-import { RoomClient } from "../src/net/client.ts";
 import type { ChatMessage } from "../src/net/protocol.ts";
-import { sanitizeChatText } from "../src/net/sanitize.ts";
+import { createBotsSession } from "../src/session/bots.ts";
+import { createHostSession } from "../src/session/host.ts";
+import { createJoinSession } from "../src/session/join.ts";
+import type { GameSession } from "../src/session/types.ts";
+import { createPersonalRoom, normalizeWorkerEndpoint } from "../src/ui/cloud.ts";
+import { normalizeRoomUrl, parsePokerCommand, shareableRoomUrl } from "../src/ui/commands.ts";
 
-const CHAT_LOG_LIMIT = 200;
 const CHAT_PANEL_LINES = 4;
 
 const RING_WIDTH = 75;
@@ -21,7 +21,6 @@ const RING_HEIGHT = 15;
 const SEAT_HALF_WIDTH = 10;
 const SEAT_HALF_HEIGHT = 3;
 const BOX_INNER = 17;
-const DEFAULT_PORT = 4551;
 const DEFAULT_STARTING_STACK = 2000;
 const DEFAULT_SMALL_BLIND = 10;
 const DEFAULT_BIG_BLIND = 20;
@@ -72,272 +71,6 @@ function formatTokenCount(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
 	return String(n);
-}
-
-// ---------- bot AI ----------
-
-function botDecision(state: TableState, seatIndex: number): Action {
-	const legal = computeLegalActions(state, seatIndex);
-	const roll = Math.random();
-	if (legal.canCheck) {
-		if (legal.canBetOrRaise && roll < 0.12) return { type: "raise", amount: legal.minRaiseTo };
-		return { type: "check" };
-	}
-	if (!legal.canCall) return { type: "fold" };
-	const seat = state.seats[seatIndex];
-	const stackBase = seat ? seat.stack + seat.committed : 1;
-	const callRatio = legal.callAmount / Math.max(1, stackBase);
-	if (callRatio > 0.55 && roll < 0.5) return { type: "fold" };
-	if (legal.canBetOrRaise && roll < 0.07) return { type: "raise", amount: legal.minRaiseTo };
-	return { type: "call" };
-}
-
-// ---------- game session abstraction ----------
-
-interface SessionInfo {
-	roomLabel: string;
-	myId: string;
-	mySeatIndex: number | null;
-}
-
-interface GameSession {
-	readonly info: SessionInfo;
-	getState(): PublicTableState;
-	legalActionsForMe(): LegalActions | null;
-	canStartHand(): boolean;
-	startHand(): void;
-	act(action: Action): void;
-	getChatLog(): readonly ChatMessage[];
-	sendChat(text: string): void;
-	subscribe(fn: () => void): () => void;
-	close(): void;
-}
-
-function makeEmitter() {
-	const listeners = new Set<() => void>();
-	return {
-		subscribe(fn: () => void) {
-			listeners.add(fn);
-			return () => listeners.delete(fn);
-		},
-		emit() {
-			for (const fn of listeners) fn();
-		},
-	};
-}
-
-interface LocalOptions {
-	myId: string;
-	displayName: string;
-	seatCount: number;
-	smallBlind: number;
-	bigBlind: number;
-	startingStack: number;
-}
-
-/** Solo play against simple local bots. No networking. */
-function createBotsSession(opts: LocalOptions): GameSession {
-	let state = createTable({ seatCount: opts.seatCount, smallBlind: opts.smallBlind, bigBlind: opts.bigBlind });
-	state = seatPlayer(state, 0, { id: opts.myId, displayName: opts.displayName, stack: opts.startingStack });
-	for (let i = 1; i < opts.seatCount; i++) {
-		state = seatPlayer(state, i, { id: `bot-${i}`, displayName: `bot-${i}`, stack: opts.startingStack });
-	}
-	const emitter = makeEmitter();
-	let botTimer: NodeJS.Timeout | undefined;
-	let chatLog: ChatMessage[] = [];
-	let announcedLogLength = 0;
-	let chatCounter = 0;
-
-	const pushChat = (seatIndex: number | null, displayName: string, text: string) => {
-		chatLog = [...chatLog, { id: `local-${++chatCounter}`, seatIndex, displayName, text, ts: Date.now() }];
-		if (chatLog.length > CHAT_LOG_LIMIT) chatLog = chatLog.slice(-CHAT_LOG_LIMIT);
-	};
-
-	const announceNewLog = () => {
-		while (announcedLogLength < state.log.length) {
-			pushChat(null, "table", state.log[announcedLogLength] as string);
-			announcedLogLength++;
-		}
-	};
-
-	const scheduleBotTurn = () => {
-		if (botTimer) return;
-		const toAct = state.toActIndex;
-		if (toAct === null || toAct === 0 || state.street === "showdown") return;
-		botTimer = setTimeout(() => {
-			botTimer = undefined;
-			const idx = state.toActIndex;
-			if (idx === null || idx === 0 || state.street === "showdown") return;
-			try {
-				state = applyAction(state, idx, botDecision(state, idx));
-			} catch {
-				state = applyAction(state, idx, { type: "fold" });
-			}
-			announceNewLog();
-			emitter.emit();
-			scheduleBotTurn();
-		}, 450);
-	};
-
-	return {
-		info: { roomLabel: "Local vs bots", myId: opts.myId, mySeatIndex: 0 },
-		getState: () => redactStateFor(state, opts.myId),
-		legalActionsForMe: () => computeLegalActions(state, 0),
-		canStartHand: () => state.street === "showdown" && state.seats.filter((s) => s && s.stack > 0).length >= 2,
-		startHand: () => {
-			state = engineStartHand(state);
-			announcedLogLength = 0;
-			announceNewLog();
-			emitter.emit();
-			scheduleBotTurn();
-		},
-		act: (action) => {
-			state = applyAction(state, 0, action);
-			announceNewLog();
-			emitter.emit();
-			scheduleBotTurn();
-		},
-		getChatLog: () => chatLog,
-		sendChat: (text) => {
-			const clean = sanitizeChatText(text);
-			if (!clean) return;
-			pushChat(0, opts.displayName, clean);
-			emitter.emit();
-		},
-		subscribe: emitter.subscribe,
-		close: () => {
-			if (botTimer) clearTimeout(botTimer);
-		},
-	};
-}
-
-interface HostOptions extends LocalOptions {
-	port: number;
-	onLog?: (line: string) => void;
-}
-
-function createHostSession(opts: HostOptions, onReady: (port: number) => void): GameSession {
-	const emitter = makeEmitter();
-	const room = new HostRoom({
-		port: opts.port,
-		seatCount: opts.seatCount,
-		smallBlind: opts.smallBlind,
-		bigBlind: opts.bigBlind,
-		startingStack: opts.startingStack,
-		onStateChange: () => emitter.emit(),
-		onChatMessage: () => emitter.emit(),
-		onLog: opts.onLog,
-	});
-	room.seatLocalPlayer(0, opts.myId, opts.displayName);
-	room
-		.waitForListening()
-		.then((port) => onReady(port))
-		.catch(() => {});
-
-	return {
-		info: { roomLabel: "Hosting", myId: opts.myId, mySeatIndex: 0 },
-		getState: () => redactStateFor(room.state, opts.myId),
-		legalActionsForMe: () => computeLegalActions(room.state, 0),
-		canStartHand: () => room.canStartHand() && room.state.street === "showdown",
-		startHand: () => room.startHand(),
-		act: (action) => room.applyLocalAction(0, action),
-		getChatLog: () => room.getChatHistory(),
-		sendChat: (text) => room.sendLocalChat(0, text),
-		subscribe: emitter.subscribe,
-		close: () => room.close(),
-	};
-}
-
-interface JoinOptions {
-	url: string;
-	myId: string;
-	displayName: string;
-}
-
-function createJoinSession(opts: JoinOptions, onEvent: (kind: "welcome" | "rejected" | "hostDisconnected", message?: string) => void): GameSession {
-	const emitter = makeEmitter();
-	let lastState: PublicTableState | undefined;
-	let mySeatIndex: number | null = null;
-	let chatLog: ChatMessage[] = [];
-	let welcomed = false;
-
-	const client = new RoomClient({
-		url: opts.url,
-		playerId: opts.myId,
-		displayName: opts.displayName,
-		onWelcome: (info) => {
-			welcomed = true;
-			mySeatIndex = info.seatIndex;
-			onEvent("welcome");
-			emitter.emit();
-		},
-		onState: (state) => {
-			lastState = state;
-			emitter.emit();
-		},
-		onChatMessage: (message) => {
-			chatLog = [...chatLog, message].slice(-CHAT_LOG_LIMIT);
-			emitter.emit();
-		},
-		onChatHistory: (messages) => {
-			chatLog = messages.slice(-CHAT_LOG_LIMIT);
-			emitter.emit();
-		},
-		onRejected: (reason, message) => onEvent("rejected", message ?? reason),
-		// ponytail: welcomed==false means we never connected; welcomed==true means host went away mid-game.
-		onClose: () => onEvent(welcomed ? "hostDisconnected" : "rejected", welcomed ? undefined : "Connection closed"),
-	});
-
-	const emptyState: PublicTableState = {
-		seats: [],
-		dealerIndex: -1,
-		smallBlind: 0,
-		bigBlind: 0,
-		street: "showdown",
-		communityCards: [],
-		toActIndex: null,
-		currentBet: 0,
-		minRaise: 0,
-		handNumber: 0,
-		pots: [],
-		winners: [],
-		awards: [],
-		log: [],
-	};
-
-	return {
-		info: { roomLabel: `Connected to ${opts.url}`, myId: opts.myId, mySeatIndex },
-		getState: () => lastState ?? emptyState,
-		legalActionsForMe: () => {
-			if (mySeatIndex === null || !lastState) return null;
-			// Clients don't run the engine locally; derive a minimal legality check
-			// from the public state so the UI can grey out actions consistently.
-			const seat = lastState.seats[mySeatIndex];
-			if (!seat || lastState.toActIndex !== mySeatIndex || seat.status !== "active") {
-				return { canFold: false, canCheck: false, canCall: false, callAmount: 0, canBetOrRaise: false, minRaiseTo: 0, maxRaiseTo: 0 };
-			}
-			const toCall = Math.max(0, lastState.currentBet - seat.committed);
-			const callAmount = Math.min(toCall, seat.stack);
-			const maxRaiseTo = seat.committed + seat.stack;
-			const minRaiseTo = Math.min(lastState.currentBet + lastState.minRaise, maxRaiseTo);
-			return {
-				canFold: true,
-				canCheck: toCall === 0,
-				canCall: toCall > 0 && seat.stack > 0,
-				callAmount,
-				canBetOrRaise: seat.stack > callAmount,
-				minRaiseTo,
-				maxRaiseTo,
-			};
-		},
-		canStartHand: () => false,
-		startHand: () => {},
-		act: (action) => client.sendAction(action),
-		getChatLog: () => chatLog,
-		sendChat: (text) => client.sendChat(text),
-		subscribe: emitter.subscribe,
-		close: () => client.close(),
-	};
 }
 
 // ---------- rendering ----------
@@ -556,7 +289,7 @@ export default function pokerExtension(pi: ExtensionAPI) {
 
 	const openTable = async (ctx: ExtensionCommandContext) => {
 		if (!session) {
-			ctx.ui.notify("No poker session active. Try /poker bots, /poker host, or /poker join <address>.", "warning");
+			ctx.ui.notify("No game is active. Start with /poker local, create a personal room with /poker create, or join with /poker join <room-url>.", "warning");
 			return;
 		}
 		const activeSession = session;
@@ -660,49 +393,91 @@ export default function pokerExtension(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("poker", {
-		description: "Play Texas Hold'em: /poker bots | host [port] | join <host:port> | (reopen table)",
+		description: "Texas Hold'em: local | create | join <room-url> | leave | help",
 		handler: async (rawArgs, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/poker needs the interactive terminal UI", "warning");
 				return;
 			}
-			const args = rawArgs.trim().split(/\s+/).filter(Boolean);
-			const sub = args[0];
+			const command = parsePokerCommand(rawArgs);
 			const hostname = os.hostname();
 			const myId = `${hostname}-${crypto.randomBytes(3).toString("hex")}`;
 
-			if (!sub) {
+			if (command.kind === "open") {
 				await openTable(ctx);
 				return;
 			}
 
-			if (sub === "bots") {
+			if (command.kind === "local") {
 				closeSession(ctx);
-				const seatCount = Math.min(6, Math.max(2, Number(args[1]) || 6));
 				session = createBotsSession({
 					myId,
 					displayName: hostname,
-					seatCount,
+					seatCount: command.seatCount,
 					smallBlind: DEFAULT_SMALL_BLIND,
 					bigBlind: DEFAULT_BIG_BLIND,
 					startingStack: DEFAULT_STARTING_STACK,
 				});
+				if (command.legacyAlias) ctx.ui.notify("/poker bots still works; /poker local is the clearer name.", "info");
 				refreshWidget(ctx);
 				await openTable(ctx);
 				return;
 			}
 
-			if (sub === "host") {
-				// ponytail: no native y/n prompt in this TUI; require an explicit --i-know flag instead of building a modal.
-				if (!args.includes("--i-know")) {
+			if (command.kind === "create") {
+				const rawEndpoint = process.env.PI_POKER_WORKER_URL;
+				if (!rawEndpoint) {
 					ctx.ui.notify(
-						"🎴 Friends-only poker. YOU (the host) can technically see everyone's hole cards — this is not cheat-proof. Do not use for money. Re-run with `/poker host [port] --i-know` to confirm.",
+						"Personal Worker is not configured. Deploy packages/pi-texas-holdem-worker to your Cloudflare account, then set PI_POKER_WORKER_URL=https://<your-worker>.workers.dev before starting pi. If your Worker protects POST /rooms, also set PI_POKER_CREATE_SECRET. Secrets are sent only in the Authorization header and are never shown by /poker.",
+						"warning",
+					);
+					return;
+				}
+				let endpoint: string;
+				try {
+					endpoint = normalizeWorkerEndpoint(rawEndpoint);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					return;
+				}
+				ctx.ui.notify(`Creating a private room on ${new URL(endpoint).host}…`, "info");
+				try {
+					const created = await createPersonalRoom({
+						endpoint,
+						creationSecret: process.env.PI_POKER_CREATE_SECRET,
+					});
+					const creatorUrl = normalizeRoomUrl(created.creatorUrl);
+					closeSession(ctx);
+					session = createJoinSession({ url: creatorUrl, myId, displayName: hostname, canStartHands: true }, (kind, message) => {
+						if (kind === "welcome") {
+							ctx.ui.notify(`Private room created. Share only this invite URL: ${created.shareUrl}`, "info");
+						} else if (kind === "error") {
+							ctx.ui.notify(`Room error: ${message ?? "request rejected"}`, "warning");
+						} else if (kind === "rejected") {
+							ctx.ui.notify(`Room was created, but joining it failed: ${message ?? "unknown error"}. Invite URL: ${created.shareUrl}`, "error");
+							closeSession(ctx);
+						} else if (kind === "hostDisconnected") {
+							ctx.ui.notify("Personal room went offline. Room closed.", "warning");
+							closeSession(ctx);
+						}
+					});
+					refreshWidget(ctx);
+					await openTable(ctx);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+				return;
+			}
+
+			if (command.kind === "lanHost") {
+				if (!command.confirmed) {
+					ctx.ui.notify(
+						"LAN host mode is friends-only: the host can technically see every hand. Do not use it for money. Re-run with `/poker lan-host [port] --i-know` to confirm. (`/poker host` remains an alias.)",
 						"warning",
 					);
 					return;
 				}
 				closeSession(ctx);
-				const port = Number(args[1] && !args[1].startsWith("--") ? args[1] : "") || DEFAULT_PORT;
 				session = createHostSession(
 					{
 						myId,
@@ -711,31 +486,40 @@ export default function pokerExtension(pi: ExtensionAPI) {
 						smallBlind: DEFAULT_SMALL_BLIND,
 						bigBlind: DEFAULT_BIG_BLIND,
 						startingStack: DEFAULT_STARTING_STACK,
-						port,
+						port: command.port,
 						onLog: (line) => ctx.ui.notify(line, "info"),
 					},
-					(boundPort) => ctx.ui.notify(`Hosting on port ${boundPort}. Share <your-ip>:${boundPort} for others to join.`, "info"),
+					(boundPort) => ctx.ui.notify(`LAN room ready on port ${boundPort}. Share ws://<your-ip>:${boundPort} only with people you trust.`, "info"),
 				);
+				if (command.legacyAlias) ctx.ui.notify("/poker host still works; /poker lan-host makes its LAN-only behavior explicit.", "info");
 				refreshWidget(ctx);
 				await openTable(ctx);
 				return;
 			}
 
-			if (sub === "join") {
-				const address = args[1];
-				if (!address) {
-					ctx.ui.notify("Usage: /poker join <host:port>", "warning");
+			if (command.kind === "join") {
+				if (!command.address) {
+					ctx.ui.notify("Usage: /poker join <room-url>  (for example wss://room.example or 192.168.1.20:4551)", "warning");
 					return;
 				}
+				let url: string;
+				try {
+					url = normalizeRoomUrl(command.address);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					return;
+				}
+				const hasCreatorCapability = new URL(url).searchParams.has("creator");
 				closeSession(ctx);
-				const url = address.startsWith("ws://") || address.startsWith("wss://") ? address : `ws://${address}`;
-				ctx.ui.notify(`Joining ${address} — the host's machine runs the game and can see your hole cards. Only join hosts you trust.`, "info");
-				session = createJoinSession({ url, myId, displayName: hostname }, (kind, message) => {
-					if (kind === "rejected") {
+				ctx.ui.notify(`Joining ${shareableRoomUrl(url)}. The room operator runs the game and can technically see every hand; only join URLs you trust.`, "info");
+				session = createJoinSession({ url, myId, displayName: hostname, canStartHands: hasCreatorCapability }, (kind, message) => {
+					if (kind === "error") {
+						ctx.ui.notify(`Room error: ${message ?? "request rejected"}`, "warning");
+					} else if (kind === "rejected") {
 						ctx.ui.notify(`Could not join: ${message ?? "unknown error"}`, "error");
 						closeSession(ctx);
 					} else if (kind === "hostDisconnected") {
-						ctx.ui.notify("Host went offline — this hand ended and any bets are returned. Room closed.", "warning");
+						ctx.ui.notify("Room went offline — this hand ended and any bets are returned. Room closed.", "warning");
 						closeSession(ctx);
 					}
 				});
@@ -744,13 +528,24 @@ export default function pokerExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (sub === "leave" || sub === "quit") {
+			if (command.kind === "rooms") {
+				ctx.ui.notify("Public room discovery is coming later; there is no directory backend yet. No network request was made. Use a room URL from someone you trust with /poker join <room-url>.", "info");
+				return;
+			}
+
+			if (command.kind === "privacy") {
+				ctx.ui.notify("Telemetry is off. This extension does not send usage or gameplay analytics. Any future telemetry will require explicit opt-in and an obvious way to turn it off.", "info");
+				return;
+			}
+
+			if (command.kind === "leave") {
 				closeSession(ctx);
 				ctx.ui.notify("Left the poker table", "info");
 				return;
 			}
 
-			ctx.ui.notify("Usage: /poker bots [seats] | host [port] | join <host:port> | leave", "warning");
+			if (command.kind === "invalid") ctx.ui.notify(`Unknown poker command: ${command.input}`, "warning");
+			ctx.ui.notify("/poker local [seats] | create | join <room-url> | lan-host [port] --i-know | rooms | privacy | leave", "info");
 		},
 	});
 
