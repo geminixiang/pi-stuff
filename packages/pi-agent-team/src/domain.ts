@@ -170,6 +170,7 @@ export interface AuditEvent {
     | "message.observed"
     | "member.woke"
     | "member.flushWoke"
+    | "member.batchHeld"
     | "member.claimed"
     | "member.claimRejected"
     | "claim.released"

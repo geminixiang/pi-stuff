@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "source": "https://models.dev/api.json",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "modelsDevProvider": "deepseek",
+      "modelsDevModel": "deepseek-v4-flash"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "modelsDevProvider": "deepseek",
+      "modelsDevModel": "deepseek-v4-pro"
+    },
+    { "id": "glm-5.2", "modelsDevProvider": "zai", "modelsDevModel": "glm-5.2" },
+    { "id": "glm-5.3", "modelsDevProvider": "opencode-go", "modelsDevModel": "glm-5.3" },
+    { "id": "gpt-5.4", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.4" },
+    { "id": "gpt-5.4-mini", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.4-mini" },
+    { "id": "gpt-5.5", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.5" },
+    { "id": "gpt-5.6-luna", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.6-luna" },
+    { "id": "gpt-5.6-sol", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.6-sol" },
+    { "id": "gpt-5.6-terra", "modelsDevProvider": "openai", "modelsDevModel": "gpt-5.6-terra" },
+    { "id": "grok-4.5", "modelsDevProvider": "xai", "modelsDevModel": "grok-4.5" },
+    { "id": "grok-4.6", "modelsDevProvider": "xai", "modelsDevModel": "grok-4.6" },
+    { "id": "kimi-k3", "modelsDevProvider": "moonshotai", "modelsDevModel": "kimi-k3" },
+    { "id": "MiniMax-M3", "modelsDevProvider": "minimax", "modelsDevModel": "MiniMax-M3" }
+  ],
+  "unsupported": [
+    {
+      "id": "claude-fable-5",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-opus-4-6",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-opus-4-7",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-opus-4-8",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-opus-5",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-sonnet-4-5-20250929",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    {
+      "id": "claude-sonnet-5",
+      "reason": "PackyAPI restricts this model to the official Claude Code client."
+    },
+    { "id": "codex-auto-review", "reason": "No defensible models.dev capability match." }
+  ]
+}

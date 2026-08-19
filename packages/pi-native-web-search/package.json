@@ -1,0 +1,42 @@
+{
+  "name": "@geminixiang/pi-native-web-search",
+  "version": "0.1.0",
+  "description": "Pi skill for native web search through configured OpenAI Codex or Anthropic credentials",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "web-search",
+    "openai-codex",
+    "anthropic"
+  ],
+  "license": "Apache-2.0",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-native-web-search"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "skills"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}

@@ -45,6 +45,7 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
   const seen = new Map<string, TeamTurn[]>();
   class CoordinatingAgent {
     readonly sessionId = crypto.randomUUID();
+    private outcome?: string;
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       const turns = seen.get(this.member.id) ?? [];
@@ -55,9 +56,12 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
           { type: "claim", resource: "leader" },
           { type: "say", body: `candidate ${this.member.id}` },
         ];
-      const outcome = turn.observations.find((message) => message.from === "runtime")?.body;
-      assert.match(outcome ?? "", /^CLAIM_(ACQUIRED|REJECTED)/);
-      return [{ type: "finish", summary: outcome! }];
+      this.outcome ??= turn.observations.find(
+        (message) =>
+          message.from === "runtime" && /^CLAIM_(ACQUIRED|REJECTED)/.test(message.body),
+      )?.body;
+      assert.match(this.outcome ?? "", /^CLAIM_(ACQUIRED|REJECTED)/);
+      return [{ type: "finish", summary: this.outcome! }];
     }
   }
   const members = [
@@ -70,14 +74,97 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
     new Map(agents.map((agent) => [agent.member.id, agent])),
   ).run({ channel: { kind: "public" }, body: "elect" });
   assert.equal(result.settlement.kind, "completed");
-  assert.deepEqual(
-    result.members.map((member) => member.turns),
-    [2, 2],
-  );
+  assert.ok(result.members.every((member) => member.turns >= 2));
   for (const turns of seen.values()) {
-    assert.equal(turns.length, 2);
-    assert.equal(turns[1].observations.filter((message) => message.from === "runtime").length, 1);
+    assert.ok(turns.length >= 2);
+    assert.equal(
+      turns
+        .flatMap((turn) => turn.observations)
+        .filter(
+          (message) =>
+            message.from === "runtime" && /^CLAIM_(ACQUIRED|REJECTED)/.test(message.body),
+        ).length,
+      1,
+    );
   }
+});
+
+test("fresh observations during act hold the whole stale batch and are delivered exactly once on rethink", async () => {
+  let releaseStaleAct: (() => void) | undefined;
+  const staleActMayReturn = new Promise<void>((resolve) => {
+    releaseStaleAct = resolve;
+  });
+  const seenByA: TeamTurn[] = [];
+
+  class A {
+    readonly member = { id: "a", name: "A" };
+    readonly sessionId = crypto.randomUUID();
+    async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
+      seenByA.push(structuredClone(turn));
+      if (turn.turn === 1) {
+        await staleActMayReturn;
+        return [
+          { type: "say", body: "stale public conclusion" },
+          { type: "send", to: "b", body: "stale private instruction" },
+          { type: "finish", summary: "stale finish" },
+        ];
+      }
+      assert.deepEqual(
+        turn.observations.map((message) => message.body),
+        ["fresh fact"],
+        "the rethink receives the concurrent observation once and in sequence",
+      );
+      return [
+        { type: "say", body: "recomputed conclusion" },
+        { type: "finish", summary: "fresh finish" },
+      ];
+    }
+  }
+
+  class B {
+    readonly member = { id: "b", name: "B" };
+    readonly sessionId = crypto.randomUUID();
+    async act(): Promise<readonly TeamCommand[]> {
+      return [
+        { type: "send", to: "a", body: "fresh fact" },
+        { type: "finish", summary: "sent fresh fact" },
+      ];
+    }
+  }
+
+  const a = new A();
+  const b = new B();
+  const runtime = new TeamRuntime(
+    "freshness",
+    new Map([
+      [a.member.id, a],
+      [b.member.id, b],
+    ]),
+    {
+      maxTurns: 3,
+      waveConcurrency: 2,
+      onActivity(activity) {
+        if (activity.kind === "message" && activity.body === "fresh fact") releaseStaleAct?.();
+      },
+    },
+  );
+  const result = await runtime.run([
+    { channel: { kind: "direct", memberId: "a" }, body: "start a" },
+    { channel: { kind: "direct", memberId: "b" }, body: "start b" },
+  ]);
+
+  assert.equal(result.settlement.kind, "completed");
+  assert.equal(seenByA.length, 2, "no duplicate empty wake follows the rethink");
+  assert.equal(
+    seenByA.flatMap((turn) => turn.observations).filter((message) => message.body === "fresh fact")
+      .length,
+    1,
+  );
+  assert.ok(result.events.some((event) => event.type === "member.batchHeld"));
+  assert.ok(!result.publicTranscript.some((message) => message.body === "stale public conclusion"));
+  assert.ok(!result.restrictedMessages.some((message) => message.from === "a"));
+  assert.ok(result.publicTranscript.some((message) => message.body === "recomputed conclusion"));
+  assert.equal(result.members.find((member) => member.id === "a")?.summary, "fresh finish");
 });
 
 test("exactly maxTurns may complete without a false overflow", async () => {

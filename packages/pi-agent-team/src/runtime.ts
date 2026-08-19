@@ -696,6 +696,14 @@ export class TeamRuntime {
       this.markErrored(memberId, cause);
       return;
     }
+    // The reaction delay is outside the prompt/act attempt. Fold anything
+    // delivered during it into this prompt and consume its ready marker, so
+    // it cannot cause a duplicate empty wake immediately afterward. Once
+    // agent.act starts, the mailbox is empty and therefore becomes the hard
+    // freshness fence for this attempt.
+    observations.push(...this.observations.get(memberId)!.splice(0));
+    observations.sort((left, right) => left.sequence - right.sequence);
+    this.ready.delete(memberId);
     const agent = this.agents.get(memberId)!;
     const turn = (this.turns.get(memberId) ?? 0) + 1;
     this.turns.set(memberId, turn);
@@ -760,6 +768,36 @@ export class TeamRuntime {
         ),
         abortRejection,
       ]);
+      const newlyDeliverable = this.observations.get(memberId)!;
+      if (newlyDeliverable.length > 0) {
+        // Hard freshness fence: no await is permitted between this mailbox
+        // validation and commit below. If an authorized envelope arrived
+        // while act() was thinking, every command was planned against stale
+        // posted state, so hold the entire batch (including finish/claim/
+        // wait/block), preserve the new observations for the next prompt,
+        // and spend this attempt as an ordinary bounded turn. Normal
+        // maxTurns/abort handling therefore also bounds pathological churn.
+        newlyDeliverable.sort((left, right) => left.sequence - right.sequence);
+        this.ready.add(memberId);
+        this.readyCause.delete(memberId);
+        this.states.set(memberId, "ready");
+        this.record("member.batchHeld", memberId, undefined, {
+          turn,
+          commandCount: commands.length,
+          observationIds: newlyDeliverable.map((message) => message.id),
+        });
+        this.emitActivity(
+          memberId,
+          "wait",
+          `freshness fence held ${commands.length} stale command${commands.length === 1 ? "" : "s"}; rethinking with ${newlyDeliverable.length} new observation${newlyDeliverable.length === 1 ? "" : "s"}`,
+          { kind: "direct", memberId },
+          [memberId],
+        );
+        return;
+      }
+      // Atomic validation-to-commit seam: all command application below is
+      // synchronous, so no delivery can interleave after the empty-mailbox
+      // check and before the returned batch starts committing.
       const claim = commands.find((command) => command.type === "claim");
       if (claim) {
         this.applyCommand(memberId, claim);

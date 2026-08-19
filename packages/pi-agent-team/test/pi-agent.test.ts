@@ -76,6 +76,14 @@ test("formatTurn surfaces a blocked member's state and reason in the digest", ()
   assert.match(text, /BLOCKED: a="needs approval"/);
 });
 
+test("formatTurn gives abstract freshness guidance without prescribing speaking slots", () => {
+  const text = formatTurn(baseTurn());
+  assert.match(text, /actual posted state/);
+  assert.match(text, /provisional until the runtime commits/);
+  assert.match(text, /reread and recompute/);
+  assert.match(text, /rather than blindly repeating peers or inventing speaking slots/);
+});
+
 interface FakeSession {
   readonly sessionId: string;
   prompt(text: string): Promise<void>;
@@ -100,6 +108,21 @@ function agentWithSession(prompt: (internals: AgentInternals) => Promise<void>):
   };
   return agent;
 }
+
+test("local team tool confirmations are honest about provisional queued state", () => {
+  const agent = new PiTeamAgent({ id: "a", name: "A" }, "/tmp", {} as never);
+  const internals = agent as unknown as {
+    turnState: TurnState;
+    queueCommand(command: unknown, confirmation: string): { content: [{ text: string }] };
+  };
+  const outcome = internals.queueCommand(
+    { type: "say", body: "not posted yet" },
+    "spoken publicly",
+  );
+  assert.match(outcome.content[0].text, /queued provisionally/);
+  assert.match(outcome.content[0].text, /not yet published/);
+  assert.doesNotMatch(outcome.content[0].text, /^spoken publicly$/);
+});
 
 test("a provider failure after a non-terminal command was queued rethrows instead of committing the half batch", async () => {
   // Regression: act() used to treat "anything was queued" as proof the
