@@ -27,52 +27,90 @@ export interface TableLayout {
 	padLeft: number;
 }
 
-const BORDER_GLYPHS = ["│", "╮", "─", "╭", "│", "╰", "─", "╯"] as const;
-
-function borderGlyph(dx: number, dy: number): string {
-	const angle = (Math.atan2(-dy, dx) * 180) / Math.PI;
-	const normalized = ((angle % 360) + 360) % 360;
-	const idx = Math.floor(((normalized + 22.5) % 360) / 45);
-	return BORDER_GLYPHS[idx] as string;
-}
+const MIRROR_GLYPH: Record<string, string> = {
+	"╭": "╮",
+	"╮": "╭",
+	"╰": "╯",
+	"╯": "╰",
+	"─": "─",
+	"│": "│",
+};
 
 /** Ellipse radii used for the table rail, given the drawable box. */
 function railRadii(width: number, height: number) {
 	return { a: width / 2 - 3, b: height / 2 - 0.9 };
 }
 
+/**
+ * Draw a connected terminal oval one scanline at a time.
+ *
+ * Independently rounded ellipse points leave gaps on a character grid. Each row
+ * instead owns a connected horizontal part of the rail and joins the prior row.
+ */
 export function generateRing(width: number, height: number): RingGrid {
+	if (width < 5 || height < 3) throw new Error("A table ring needs at least a 5×3 grid");
+
 	const cx = (width - 1) / 2;
 	const cy = (height - 1) / 2;
-	const { a, b } = railRadii(width, height);
-	const grid: string[][] = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
+	const { a } = railRadii(width, height);
+	const sampleRadiusY = height / 2;
+	const leftEdges = Array.from({ length: height }, (_, y) => {
+		// Sampling through the cell center gives the oval a useful flat top rather
+		// than collapsing its first row to a single point.
+		const normalizedY = Math.abs(y - cy) / sampleRadiusY;
+		const extent = a * Math.sqrt(Math.max(0, 1 - normalizedY * normalizedY));
+		return Math.round(cx - extent);
+	});
+	const rows = Array.from({ length: height }, () => Array.from({ length: width }, () => " "));
 
-	const setCell = (x: number, y: number) => {
-		const xi = Math.round(x);
-		const yi = Math.round(y);
-		if (xi < 0 || xi >= width || yi < 0 || yi >= height) return;
-		grid[yi]![xi] = borderGlyph(xi - cx, yi - cy);
+	const drawHorizontal = (row: string[], from: number, to: number) => {
+		for (let x = Math.max(0, from); x <= Math.min(width - 1, to); x++) row[x] = "─";
 	};
 
-	// Round the radius offset once, then apply it symmetrically to both sides of the
-	// integer center. Rounding cx-d and cx+d independently instead can pick different
-	// directions for a .5 offset and skew the oval by a column.
-	for (let xi = 0; xi < width; xi++) {
-		const ndx = (xi - cx) / a;
-		if (Math.abs(ndx) > 1) continue;
-		const dy = Math.round(b * Math.sqrt(Math.max(0, 1 - ndx * ndx)));
-		setCell(xi, cy - dy);
-		setCell(xi, cy + dy);
-	}
-	for (let yi = 0; yi < height; yi++) {
-		const ndy = (yi - cy) / b;
-		if (Math.abs(ndy) > 1) continue;
-		const dx = Math.round(a * Math.sqrt(Math.max(0, 1 - ndy * ndy)));
-		setCell(cx - dx, yi);
-		setCell(cx + dx, yi);
+	for (let y = 0; y < height; y++) {
+		const left = leftEdges[y]!;
+		const right = width - 1 - left;
+		const row = rows[y]!;
+
+		if (y === 0 || y === height - 1) {
+			const edge = y === 0 ? left : leftEdges[y - 1]!;
+			const oppositeEdge = width - 1 - edge;
+			drawHorizontal(row, edge + 1, oppositeEdge - 1);
+			row[edge] = y === 0 ? "╭" : "╰";
+			row[oppositeEdge] = y === 0 ? "╮" : "╯";
+			continue;
+		}
+
+		const previousLeft = leftEdges[y - 1]!;
+		const previousRight = width - 1 - previousLeft;
+		if (left < previousLeft) {
+			drawHorizontal(row, left + 1, previousLeft - 1);
+			row[left] = "╭";
+			row[previousLeft] = "╯";
+			row[previousRight] = "╰";
+			drawHorizontal(row, previousRight + 1, right - 1);
+			row[right] = "╮";
+		} else if (left > previousLeft) {
+			row[previousLeft] = "╰";
+			drawHorizontal(row, previousLeft + 1, left - 1);
+			row[left] = "╮";
+			row[right] = "╭";
+			drawHorizontal(row, right + 1, previousRight - 1);
+			row[previousRight] = "╯";
+		} else {
+			row[left] = "│";
+			row[right] = "│";
+		}
 	}
 
-	return { width, height, rows: grid.map((row) => row.join("")) };
+	// Preserve exact left/right symmetry for even-width grids too.
+	for (const row of rows) {
+		for (let x = 0; x < Math.floor(width / 2); x++) {
+			row[width - 1 - x] = MIRROR_GLYPH[row[x]!] ?? " ";
+		}
+	}
+
+	return { width, height, rows: rows.map((row) => row.join("")) };
 }
 
 /**

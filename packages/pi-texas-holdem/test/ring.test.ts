@@ -27,6 +27,26 @@ test("the ring is left-right symmetric", () => {
 	}
 });
 
+test("the ring is one connected rail without detached glyphs", () => {
+	const ring = generateRing(75, 15);
+	const occupied = ring.rows.map((row) => [...row].map((ch) => ch !== " "));
+	const startY = occupied.findIndex((row) => row.some(Boolean));
+	const startX = occupied[startY]!.findIndex(Boolean);
+	const seen = new Set<string>();
+	const queue: Array<[number, number]> = [[startX, startY]];
+	while (queue.length > 0) {
+		const [x, y] = queue.shift()!;
+		const key = `${x},${y}`;
+		if (seen.has(key) || !occupied[y]?.[x]) continue;
+		seen.add(key);
+		for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) queue.push([x + dx, y + dy]);
+	}
+	const glyphCount = occupied.reduce((total, row) => total + row.filter(Boolean).length, 0);
+	assert.equal(seen.size, glyphCount, "the table rail contains disconnected segments");
+	assert.match(ring.rows[0]!, /╭─+╮/);
+	assert.match(ring.rows.at(-1)!, /╰─+╯/);
+});
+
 for (const seatCount of [2, 3, 4, 5, 6, 7, 8, 9]) {
 	test(`layoutTable places ${seatCount} seat anchors fully inside the padded canvas`, () => {
 		const table = layoutTable(74, 15, seatCount);
