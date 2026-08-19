@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { forceFold, seatPlayer, startHand, createTable } from "@geminixiang/pi-texas-holdem/src/engine/table.ts";
+import { forceFold, seatPlayer, startHand, createTable } from "../../src/engine/table.ts";
 import {
 	assertCreatorCanStartHand,
 	canAcceptConnection,

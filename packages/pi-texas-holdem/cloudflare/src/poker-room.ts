@@ -1,13 +1,13 @@
-import { applyAction, createTable, forceFold, leaveSeat, seatPlayer, startHand } from "@geminixiang/pi-texas-holdem/src/engine/table.ts";
-import type { Action, TableState } from "@geminixiang/pi-texas-holdem/src/engine/types.ts";
-import { redactStateFor } from "@geminixiang/pi-texas-holdem/src/engine/view.ts";
+import { applyAction, createTable, forceFold, leaveSeat, seatPlayer, startHand } from "../../src/engine/table.ts";
+import type { Action, TableState } from "../../src/engine/types.ts";
+import { redactStateFor } from "../../src/engine/view.ts";
 import {
 	encode,
 	PROTOCOL_VERSION,
 	type ClientMessage,
 	type ServerMessage,
-} from "@geminixiang/pi-texas-holdem/src/net/protocol.ts";
-import { sanitizeChatText } from "@geminixiang/pi-texas-holdem/src/net/sanitize.ts";
+} from "../../src/net/protocol.ts";
+import { sanitizeChatText } from "../../src/net/sanitize.ts";
 import { roomTtlMs } from "./config.ts";
 import type { Env, RoomConfig, RoomMetadata } from "./types.ts";
 

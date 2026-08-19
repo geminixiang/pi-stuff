@@ -1,6 +1,6 @@
-# pi-texas-holdem-worker
+# Cloudflare backend
 
-A self-hosted Cloudflare Worker + Durable Object backend for private `pi-texas-holdem` rooms. Each room creator deploys this package to **their own Cloudflare account**; there is no shared service, account, credential, or domain in this repository.
+A self-hosted Cloudflare Worker + Durable Object backend bundled with `pi-texas-holdem` for private internet rooms. It is not a Pi extension or a separate npm package. Each room creator deploys it to **their own Cloudflare account**; there is no shared service, account, credential, or domain in this repository.
 
 ## MVP
 
@@ -19,20 +19,20 @@ Requirements: Node.js 22+, a personal Cloudflare account, and Durable Objects av
 
 ```sh
 npm install
-cp packages/pi-texas-holdem-worker/wrangler.example.jsonc \
-  packages/pi-texas-holdem-worker/wrangler.jsonc
+cp packages/pi-texas-holdem/cloudflare/wrangler.example.jsonc \
+  packages/pi-texas-holdem/cloudflare/wrangler.jsonc
 # Pick your own globally unique Worker name in wrangler.jsonc.
 # Set a long random deployer-only secret; the value is never committed.
 printf '%s' "$(openssl rand -hex 32)" | npx wrangler secret put CREATE_ROOM_SECRET \
-  --config packages/pi-texas-holdem-worker/wrangler.jsonc
-npx wrangler dev --config packages/pi-texas-holdem-worker/wrangler.jsonc
+  --config packages/pi-texas-holdem/cloudflare/wrangler.jsonc
+npx wrangler dev --config packages/pi-texas-holdem/cloudflare/wrangler.jsonc
 ```
 
 Only when you intentionally want to publish to your own account:
 
 ```sh
 npx wrangler login
-npx wrangler deploy --config packages/pi-texas-holdem-worker/wrangler.jsonc
+npx wrangler deploy --config packages/pi-texas-holdem/cloudflare/wrangler.jsonc
 ```
 
 Do not commit credentials, account IDs, routes, or custom domains. The example uses the account's ordinary `workers.dev` URL and contains no organization-specific resource.
@@ -92,6 +92,6 @@ No authentication or reconnect token exists in protocol v2. Duplicate live `play
 ## Verification
 
 ```sh
-npm run check --workspace @geminixiang/pi-texas-holdem-worker
-npm test --workspace @geminixiang/pi-texas-holdem-worker
+npm run check:cloudflare --workspace @geminixiang/pi-texas-holdem
+npm run test:cloudflare --workspace @geminixiang/pi-texas-holdem
 ```

@@ -19,7 +19,7 @@ Play locally against bots:
 
 ## Online rooms
 
-To create internet rooms, first deploy [`pi-texas-holdem-worker`](../pi-texas-holdem-worker/README.md) to your personal Cloudflare account. Then start pi with:
+To create internet rooms, first deploy [the bundled Cloudflare backend](cloudflare/README.md) to your personal Cloudflare account. Then start pi with:
 
 ```sh
 export PI_POKER_WORKER_URL="https://YOUR-WORKER.workers.dev"

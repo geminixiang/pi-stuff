@@ -428,7 +428,7 @@ export default function pokerExtension(pi: ExtensionAPI) {
 				const rawEndpoint = process.env.PI_POKER_WORKER_URL;
 				if (!rawEndpoint) {
 					ctx.ui.notify(
-						"Personal Worker is not configured. Deploy packages/pi-texas-holdem-worker to your Cloudflare account, then set PI_POKER_WORKER_URL=https://<your-worker>.workers.dev before starting pi. If your Worker protects POST /rooms, also set PI_POKER_CREATE_SECRET. Secrets are sent only in the Authorization header and are never shown by /poker.",
+						"Personal Worker is not configured. Deploy packages/pi-texas-holdem/cloudflare to your Cloudflare account, then set PI_POKER_WORKER_URL=https://<your-worker>.workers.dev before starting pi. If your Worker protects POST /rooms, also set PI_POKER_CREATE_SECRET. Secrets are sent only in the Authorization header and are never shown by /poker.",
 						"warning",
 					);
 					return;
