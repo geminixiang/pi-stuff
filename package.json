@@ -3,10 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "description": "Monorepo for @geminixiang Pi extensions and skills",
+  "keywords": [
+    "pi-extension",
+    "pi-package",
+    "pi-skill"
+  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git"
+  },
   "workspaces": [
     "packages/*"
   ],
+  "type": "module",
   "scripts": {
     "check": "npm run check --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
@@ -23,5 +33,11 @@
   },
   "engines": {
     "node": ">=22.19.0"
-  }
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "readme": "README.md"
 }

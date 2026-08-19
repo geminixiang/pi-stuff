@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "taiwan-patent-lookup",
+  "title": "Taiwan TIPO patent lookup",
+  "description": "Fill one Query and run scripts/lookup.sh --query '{...}'. Combine every filter in that object so TIPO gets one PatentRights/PatentAnnuity call per applclass. Dates are YYYYMMDD or YYYY-MM-DD. Same-field OR uses |. Infer applclass from patentno / publishno / applno / noticeno when possible.",
+  "$defs": {
+    "ApplClass": {
+      "type": "integer",
+      "enum": [1, 2, 3],
+      "description": "1=發明 I, 2=新型 M, 3=設計 D"
+    },
+    "Query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "applclass": { "$ref": "#/$defs/ApplClass" },
+        "patentno": {
+          "type": "string",
+          "description": "證書號 / 專利權號數. After 2004-08-01: I… / M… / D…",
+          "x-api": "patentno",
+          "x-match": "exact",
+          "x-or": true,
+          "x-infers": "applclass-from-prefix"
+        },
+        "noticeno": {
+          "type": "string",
+          "description": "公開號. Invention only; forces applclass=1",
+          "x-api": "noticeno",
+          "x-match": "exact",
+          "x-or": true,
+          "x-class": 1
+        },
+        "noticebdate": { "$ref": "#/$defs/Date", "description": "公開日期起", "x-api": "noticebdate" },
+        "noticeedate": { "$ref": "#/$defs/Date", "description": "公開日期迄", "x-api": "noticeedate" },
+        "noticebvolisu": { "$ref": "#/$defs/VolIsu", "description": "公開卷期起 6 digits", "x-api": "noticebvolisu" },
+        "noticeevolisu": { "$ref": "#/$defs/VolIsu", "description": "公開卷期迄 6 digits", "x-api": "noticeevolisu" },
+        "publishno": {
+          "type": "string",
+          "description": "公告號. Same I/M/D prefix as patentno",
+          "x-api": "publishno",
+          "x-match": "exact",
+          "x-or": true,
+          "x-infers": "applclass-from-prefix"
+        },
+        "publishbdate": { "$ref": "#/$defs/Date", "description": "公告日期起", "x-api": "publishbdate" },
+        "publishedate": { "$ref": "#/$defs/Date", "description": "公告日期迄", "x-api": "publishedate" },
+        "publishbvolisu": { "$ref": "#/$defs/VolIsu", "description": "公告卷期起", "x-api": "publishbvolisu" },
+        "publishevolisu": { "$ref": "#/$defs/VolIsu", "description": "公告卷期迄", "x-api": "publishevolisu" },
+        "applno": {
+          "type": "string",
+          "description": "申請案號. 4th digit is 1/2/3 and must match applclass",
+          "x-api": "applno",
+          "x-match": "exact",
+          "x-or": true,
+          "x-infers": "applclass-from-applno"
+        },
+        "applbdate": { "$ref": "#/$defs/Date", "description": "申請日期起", "x-api": "applbdate" },
+        "appledate": { "$ref": "#/$defs/Date", "description": "申請日期迄", "x-api": "appledate" },
+        "patentname": {
+          "type": "string",
+          "description": "專利中英文名稱",
+          "x-api": "patentname",
+          "x-match": "fuzzy"
+        },
+        "ipcfull": {
+          "type": "string",
+          "description": "完整 IPC, e.g. G08B21/10. Invention and utility model only",
+          "x-api": "ipcfull",
+          "x-match": "fuzzy",
+          "x-class": [1, 2]
+        },
+        "ipcsection": { "type": "string", "description": "IPC 1st, e.g. G", "x-api": "ipcsection", "x-match": "exact", "x-class": [1, 2] },
+        "ipcclass": { "type": "string", "description": "IPC 2nd, e.g. 08", "x-api": "ipcclass", "x-match": "exact", "x-class": [1, 2] },
+        "ipcsubclass": { "type": "string", "description": "IPC 3rd, e.g. B", "x-api": "ipcsubclass", "x-match": "exact", "x-class": [1, 2] },
+        "ipcmaingroup": { "type": "string", "description": "IPC 4th, e.g. 21", "x-api": "ipcmaingroup", "x-match": "exact", "x-class": [1, 2] },
+        "ipcgroup": { "type": "string", "description": "IPC 5th, e.g. 10", "x-api": "ipcgroup", "x-match": "exact", "x-class": [1, 2] },
+        "locfull": {
+          "type": "string",
+          "description": "完整 LOC, e.g. 24-02. Design only",
+          "x-api": "locfull",
+          "x-match": "fuzzy",
+          "x-class": 3
+        },
+        "loclevel1": { "type": "string", "description": "LOC 1st", "x-api": "loclevel1", "x-match": "exact", "x-class": 3 },
+        "loclevel2": { "type": "string", "description": "LOC 2nd", "x-api": "loclevel2", "x-match": "exact", "x-class": 3 },
+        "applnamec": { "type": "string", "description": "申請人中文名稱", "x-api": "applnamec", "x-match": "fuzzy", "x-or": true },
+        "applnamee": { "type": "string", "description": "申請人英文名稱", "x-api": "applnamee", "x-match": "fuzzy", "x-or": true },
+        "applcountry": { "type": "string", "description": "第一申請人國別代碼, e.g. TW", "x-api": "applcountry", "x-match": "exact" },
+        "inventornamec": { "type": "string", "description": "發明人/創作人中文名稱", "x-api": "inventornamec", "x-match": "fuzzy", "x-or": true },
+        "inventornamee": { "type": "string", "description": "發明人/創作人英文名稱", "x-api": "inventornamee", "x-match": "fuzzy", "x-or": true },
+        "inventorcountry": { "type": "string", "description": "發明人國別代碼", "x-api": "inventorcountry", "x-match": "exact" },
+        "agentnamec": { "type": "string", "description": "代理人中文名稱", "x-api": "agentnamec", "x-match": "fuzzy", "x-or": true },
+        "chargeexpirbdate": { "$ref": "#/$defs/Date", "description": "年費有效日期起", "x-api": "chargeexpirbdate" },
+        "chargeexpiredate": { "$ref": "#/$defs/Date", "description": "年費有效日期迄", "x-api": "chargeexpiredate" },
+        "chargeexpiryear": {
+          "type": "string",
+          "description": "年費有效年次. PatentAnnuity only",
+          "x-api": "chargeexpiryear",
+          "x-match": "exact",
+          "x-service": "annuity"
+        },
+        "top": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 25 },
+        "skip": { "type": "integer", "minimum": 0, "default": 0 },
+        "orderby": {
+          "type": "string",
+          "default": "appl-no",
+          "description": "appl-no | notice-no | publish-no"
+        },
+        "service": {
+          "type": "string",
+          "enum": ["both", "rights", "annuity"],
+          "default": "both",
+          "description": "both = PatentRights + PatentAnnuity"
+        }
+      }
+    },
+    "Date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}[-/]?[0-9]{2}[-/]?[0-9]{2}$",
+      "description": "Sent to TIPO as YYYYMMDD"
+    },
+    "VolIsu": {
+      "type": "string",
+      "pattern": "^[0-9]{6}$",
+      "description": "volume(3)+issue(3), e.g. 052001"
+    },
+    "Charge": {
+      "type": "object",
+      "properties": {
+        "annuity_date": { "type": "string", "description": "繳納日 YYYY/MM/DD" },
+        "annuity_beg": { "type": "integer" },
+        "annuity_end": { "type": "integer" }
+      }
+    },
+    "Record": {
+      "type": "object",
+      "properties": {
+        "patent_no": { "type": "string" },
+        "appl_no": { "type": "string" },
+        "kind": { "type": "string", "enum": ["發明", "新型", "設計"] },
+        "title": { "type": "string" },
+        "title_en": { "type": "string" },
+        "filed": { "type": "string" },
+        "published": { "type": "string" },
+        "granted": { "type": "string" },
+        "term_start": { "type": "string" },
+        "term_end": { "type": "string" },
+        "status": {
+          "type": "string",
+          "description": "存續 | 逾期補繳期中 | 已消滅 | 撤銷 | 消滅/註銷"
+        },
+        "charge_expir_date": { "type": "string" },
+        "charge_expir_year": { "type": "string" },
+        "applicant": { "type": "string" },
+        "inventor": { "type": "string" },
+        "agent": { "type": "string" },
+        "ipc": { "type": "array", "items": { "type": "string" } },
+        "annuity": { "type": "array", "items": { "$ref": "#/$defs/Charge" } }
+      }
+    },
+    "Result": {
+      "type": "object",
+      "properties": {
+        "total": { "type": "integer" },
+        "snapshot": { "type": "string" },
+        "records": { "type": "array", "items": { "$ref": "#/$defs/Record" } },
+        "sources": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
