@@ -54,7 +54,7 @@ export interface TeamRoundSummary {
   roundId: string;
   roundIndex: number;
   objective: string;
-  status: "settled" | "cancelled" | "failed";
+  status: TeamRunStatus;
   startedAt: number;
   updatedAt: number;
   cancellation?: { requested: true; requestedAt: number; reason: string };
@@ -70,6 +70,12 @@ export interface TeamRunSnapshot {
   runId: string;
   teamId: string;
   lifecycle: TeamLifecycleStatus;
+  /** Explicit team-level lifecycle alias for operator-facing consumers. */
+  teamStatus: TeamLifecycleStatus;
+  /** Explicit current/latest RoundRun; flat fields below remain compatibility aliases. */
+  latestRound: TeamRoundSummary;
+  currentRound: TeamRoundSummary;
+  members: TeamRunResultSummary["members"];
   roundId: string;
   roundIndex: number;
   objective: string;
@@ -209,7 +215,7 @@ export class TeamRunManager {
     record.status = "running";
     record.roundId = nextRoundId;
     record.roundIndex += 1;
-    record.objective = `Requester continuation directed to member ${memberId}`;
+    record.objective = message;
     record.generation += 1;
     record.startedAt = Date.now();
     record.updatedAt = record.startedAt;
@@ -233,6 +239,7 @@ export class TeamRunManager {
     record.cancellation = Object.freeze({ requested: true, requestedAt: Date.now(), reason: truncateUtf8(reason, MAX_EVENT_SUMMARY_BYTES) });
     this.bump(record, "cancel-requested", record.cancellation.reason);
     record.controller.abort(new Error(record.cancellation.reason));
+    queueMicrotask(() => this.finalizeCancellation(record, record.generation));
     return this.snapshot(record);
   }
 
@@ -292,10 +299,7 @@ export class TeamRunManager {
       (result) => {
         if (record.generation !== generation || record.runtime !== runtime) return;
         if (controller.signal.aborted) {
-          record.status = "cancelled";
-          record.error = truncateUtf8(errorMessage(controller.signal.reason), MAX_EVENT_SUMMARY_BYTES);
-          this.bump(record, "cancelled", record.error);
-          this.archiveRound(record);
+          this.finalizeCancellation(record, generation);
           return;
         }
         record.status = "settled";
@@ -305,13 +309,26 @@ export class TeamRunManager {
       },
       (cause) => {
         if (record.generation !== generation || record.runtime !== runtime) return;
+        if (controller.signal.aborted) {
+          this.finalizeCancellation(record, generation, cause);
+          return;
+        }
         const message = truncateUtf8(errorMessage(cause), MAX_EVENT_SUMMARY_BYTES);
         record.error = message;
-        record.status = controller.signal.aborted ? "cancelled" : "failed";
-        this.bump(record, record.status, message);
+        record.status = "failed";
+        this.bump(record, "failed", message);
         this.archiveRound(record);
       },
     );
+  }
+
+  private finalizeCancellation(record: TeamRecord, generation: number, cause?: unknown): void {
+    if (record.generation !== generation || record.status !== "cancelling") return;
+    const cancellationCause = cause ?? record.controller.signal.reason ?? new Error("cancelled");
+    record.error = truncateUtf8(errorMessage(cancellationCause), MAX_EVENT_SUMMARY_BYTES);
+    record.status = "cancelled";
+    this.bump(record, "cancelled", record.error);
+    this.archiveRound(record);
   }
 
   private archiveRound(record: TeamRecord): void {
@@ -320,7 +337,7 @@ export class TeamRunManager {
       roundId: record.roundId,
       roundIndex: record.roundIndex,
       objective: truncateUtf8(record.objective, MAX_OBJECTIVE_BYTES),
-      status: record.status as TeamRoundSummary["status"],
+      status: record.status,
       startedAt: record.startedAt,
       updatedAt: record.updatedAt,
       cancellation: record.cancellation,
@@ -360,10 +377,27 @@ export class TeamRunManager {
 
   private snapshot(record: TeamRecord): TeamRunSnapshot {
     const lifecycle: TeamLifecycleStatus = record.status === "running" ? "running" : record.status === "cancelling" ? "closing" : "available";
+    const latestRound: TeamRoundSummary = Object.freeze({
+      teamId: record.teamId,
+      roundId: record.roundId,
+      roundIndex: record.roundIndex,
+      objective: truncateUtf8(record.objective, MAX_OBJECTIVE_BYTES),
+      status: record.status,
+      startedAt: record.startedAt,
+      updatedAt: record.updatedAt,
+      cancellation: record.cancellation,
+      result: record.result,
+      error: record.error,
+    });
+    const retainedMembers = record.result?.members ?? [...record.rounds].reverse().find((round) => round.result)?.result?.members ?? Object.freeze([]);
     return Object.freeze({
       runId: record.teamId,
       teamId: record.teamId,
       lifecycle,
+      teamStatus: lifecycle,
+      latestRound,
+      currentRound: latestRound,
+      members: retainedMembers,
       roundId: record.roundId,
       roundIndex: record.roundIndex,
       objective: truncateUtf8(record.objective, MAX_OBJECTIVE_BYTES),

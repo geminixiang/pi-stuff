@@ -22,7 +22,7 @@ pi -e npm:@geminixiang/pi-agent-team
 
 ## Lifecycle API migration
 
-Existing callers do not need to change the handle they store: the tool parameter remains named `runId` for compatibility, but its value now identifies the retained team (`teamId`), not an individual execution. Use snapshot `roundId`/`roundIndex` to correlate one objective execution. `status` remains the latest round status; use `lifecycle` to distinguish an `available`, `running`, `closing`, or `closed` retained team. Terminal `rounds` are bounded to the latest 16 summaries, and restricted message bodies are never included.
+Existing callers do not need to change the handle they store: the tool parameter remains named `runId` for compatibility, but its value now identifies the retained team (`teamId`), not an individual execution. Snapshots expose team lifecycle through both `teamStatus` and its `lifecycle` alias, while `latestRound`/`currentRound` explicitly identify the current or latest `RoundRun`; the existing flat `roundId`, `roundIndex`, objective, result, and round `status` fields remain compatibility aliases. Terminal `rounds` are bounded to the latest 16 summaries, and restricted message bodies are never included.
 
 `team_cancel` is idempotent for the latest cancelled round. Callers that retry asynchronously may pass the observed optional `roundId`; if a newer round has started, the stale cancellation is a no-op. Once cancellation settles, `team_prompt` starts a fresh round on the same member `sessionId`/`sessionRef` values. Events and late runtime callbacks are round-scoped so an older completion cannot settle or modify a newer round.
 

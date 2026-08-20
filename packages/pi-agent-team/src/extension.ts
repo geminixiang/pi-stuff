@@ -207,6 +207,7 @@ export default function agentTeam(pi: ExtensionAPI): void {
             text: renderFinalContent(result, params.members, {
               roundId: retainedSnapshot.roundId,
               roundIndex: retainedSnapshot.roundIndex,
+              objective: retainedSnapshot.objective,
             }),
           }],
           details: finalDetails(details(), result),
@@ -340,7 +341,7 @@ function registerTeamCancel(pi: ExtensionAPI, runs: TeamRunManager): void {
 function renderRunSnapshot(snapshot: TeamRunSnapshot): string {
   const lines = [
     `team: ${snapshot.teamId}`,
-    `lifecycle: ${snapshot.lifecycle}`,
+    `team lifecycle: ${snapshot.lifecycle}`,
     `round: ${snapshot.roundId} (#${snapshot.roundIndex})`,
     `objective: ${snapshot.objective}`,
     `round status: ${snapshot.status}`,
@@ -408,8 +409,21 @@ function summarizeLive(details: TeamDisplayDetails): string {
 export function renderFinalContent(
   result: TeamResult,
   members: readonly { id: string; name: string }[],
-  round?: { roundId: string; roundIndex: number },
+  round?: { roundId: string; roundIndex: number; objective?: string },
 ): string {
+  const resultRound = result as TeamResult & {
+    roundId?: string;
+    roundIndex?: number;
+    objective?: string;
+  };
+  const manifestRound = round ??
+    (resultRound.roundId !== undefined && resultRound.roundIndex !== undefined
+      ? {
+          roundId: resultRound.roundId,
+          roundIndex: resultRound.roundIndex,
+          objective: resultRound.objective,
+        }
+      : undefined);
   const nameOf = (id: string) => members.find((member) => member.id === id)?.name ?? id;
   const lines: string[] = [];
   if (result.report) {
@@ -429,9 +443,19 @@ export function renderFinalContent(
   }
   lines.push(
     "TEAM MANIFEST",
-    `team: ${result.teamId}`,
-    ...(round ? [`round: ${round.roundId} (#${round.roundIndex})`] : []),
-    `settlement: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+    `team handle: ${result.teamId}`,
+    ...(manifestRound
+      ? [
+          `round id: ${manifestRound.roundId}`,
+          `round index: ${manifestRound.roundIndex}`,
+          ...(manifestRound.objective !== undefined
+            ? [`objective: ${manifestRound.objective}`]
+            : []),
+          `round outcome: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+        ]
+      : [
+          `settlement: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+        ]),
     "members:",
   );
   for (const member of result.members) {
