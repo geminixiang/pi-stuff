@@ -57,8 +57,7 @@ test("claim contenders receive private CAS outcomes and public broadcast does no
           { type: "say", body: `candidate ${this.member.id}` },
         ];
       this.outcome ??= turn.observations.find(
-        (message) =>
-          message.from === "runtime" && /^CLAIM_(ACQUIRED|REJECTED)/.test(message.body),
+        (message) => message.from === "runtime" && /^CLAIM_(ACQUIRED|REJECTED)/.test(message.body),
       )?.body;
       assert.match(this.outcome ?? "", /^CLAIM_(ACQUIRED|REJECTED)/);
       return [{ type: "finish", summary: this.outcome! }];
@@ -259,21 +258,19 @@ test("message activities carry chat speaker, recipient, and body metadata", asyn
   );
 });
 
-test("restricted group messages reach only members and wake each recipient once", async () => {
+test("restricted group messages and implicit claims reach only members", async () => {
   const seen = new Map<string, TeamTurn[]>();
   class GroupAgent {
     readonly sessionId = crypto.randomUUID();
     constructor(readonly member: TeamMember) {}
     async act(turn: TeamTurn): Promise<readonly TeamCommand[]> {
       seen.set(this.member.id, [...(seen.get(this.member.id) ?? []), structuredClone(turn)]);
-      // The claim-then-create path still works: a claim the creator already
-      // holds is honored rather than re-arbitrated.
-      if (this.member.id === "a" && turn.turn === 1) return [{ type: "claim", resource: "wolves" }];
-      if (this.member.id === "a" && turn.turn === 2)
+      if (this.member.id === "a" && turn.turn === 1)
         return [
           { type: "create-group", channelId: "wolves", name: "Wolves", members: ["b"] },
           { type: "group-send", channelId: "wolves", body: "secret plan" },
-          { type: "finish", summary: "sent" },
+          { type: "broadcast", body: "group ready" },
+          { type: "wait" },
         ];
       if (this.member.id === "b" && turn.turn > 1) {
         assert.equal(
@@ -283,6 +280,9 @@ test("restricted group messages reach only members and wake each recipient once"
         return [{ type: "finish", summary: "received" }];
       }
       if (this.member.id === "b") return [{ type: "wait" }];
+      if (this.member.id === "a") return [{ type: "wait" }];
+      if (this.member.id === "c" && turn.turn === 1) return [{ type: "wait" }];
+      if (this.member.id === "c" && turn.turn === 2) return [{ type: "claim", resource: "wolves" }];
       return [{ type: "finish", summary: "outsider" }];
     }
   }
@@ -296,16 +296,33 @@ test("restricted group messages reach only members and wake each recipient once"
     "group",
     new Map(agents.map((agent) => [agent.member.id, agent])),
   ).run({ channel: { kind: "public" }, body: "start" });
-  assert.equal(result.settlement.kind, "completed");
-  // 2 restricted envelopes: the CLAIM_ACQUIRED notice for claiming "wolves",
-  // plus the one group-send carrying "secret plan".
-  assert.equal(result.restrictedMessages.length, 2);
+  assert.equal(result.settlement.kind, "quiescent");
+  // Restricted envelope count depends on whether the outsider's probe commits
+  // before quiescence; the security contract is about its observable content.
   assert.equal(JSON.stringify(result).includes("secret plan"), false);
   assert.equal(
     seen
       .get("c")
       ?.some((turn) => turn.observations.some((message) => message.body === "secret plan")),
     false,
+  );
+  assert.equal(
+    seen.get("c")?.some((turn) => turn.digest.claims.wolves === "a"),
+    false,
+    "an outsider must not receive restricted group claim metadata",
+  );
+  assert.equal(
+    seen
+      .get("c")
+      ?.flatMap((turn) => turn.observations)
+      .some((message) => message.body.includes("wolves") || message.body.includes("owner=a")),
+    false,
+    "probing a restricted group claim must not reveal its resource or owner",
+  );
+  assert.equal(
+    seen.get("b")?.some((turn) => turn.digest.claims.wolves === "a"),
+    true,
+    "a group member may observe its group's implicit claim",
   );
 });
 
@@ -349,9 +366,9 @@ test("creating a group atomically claims an unclaimed channelId in one turn", as
   assert.equal(claimed.length, 1);
   assert.equal(claimed[0].memberId, "a");
   assert.deepEqual(claimed[0].data, { resource: "wolves" });
-  // Only the group-send is restricted; the implicit claim posts no
-  // CLAIM_ACQUIRED round-trip — that round-trip was the exposure window.
-  assert.equal(result.restrictedMessages.length, 1);
+  // The group-send and group-scoped implicit-claim release are restricted;
+  // neither body is included in the bounded result.
+  assert.equal(result.restrictedMessages.length, 2);
   assert.equal(JSON.stringify(result).includes("secret plan"), false);
   assert.equal(
     seen.get("c")?.some((turn) => turn.observations.some((m) => m.body === "secret plan")),
@@ -471,7 +488,10 @@ test("a finish command truncates the rest of the batch at the core level, for an
     readonly sessionId = crypto.randomUUID();
     readonly member = { id: "rogue", name: "Rogue" };
     async act(): Promise<readonly TeamCommand[]> {
-      return [{ type: "finish", summary: "done" }, { type: "say", body: "should never post" }];
+      return [
+        { type: "finish", summary: "done" },
+        { type: "say", body: "should never post" },
+      ];
     }
   }
   class Other {
@@ -548,14 +568,26 @@ test("next() starts a clean round while retaining member sessions", async () => 
 
   assert.equal(continuation.teamId, runtime.teamId);
   assert.equal(continuation.objective, "second task");
-  assert.deepEqual(first.members.map((member) => member.sessionId), second.members.map((member) => member.sessionId));
-  assert.deepEqual(agents.map((agent) => agent.acts), [2, 2]);
-  assert.deepEqual(agents.map((agent) => agent.closes), [0, 0]);
+  assert.deepEqual(
+    first.members.map((member) => member.sessionId),
+    second.members.map((member) => member.sessionId),
+  );
+  assert.deepEqual(
+    agents.map((agent) => agent.acts),
+    [2, 2],
+  );
+  assert.deepEqual(
+    agents.map((agent) => agent.closes),
+    [0, 0],
+  );
   assert.ok(second.members.every((member) => member.turns === 1));
   assert.equal(second.userInterventions, 1);
 
   await continuation.close();
-  assert.deepEqual(agents.map((agent) => agent.closes), [1, 1]);
+  assert.deepEqual(
+    agents.map((agent) => agent.closes),
+    [1, 1],
+  );
 });
 
 test("claims are atomic and audit chain detects tampering", async () => {

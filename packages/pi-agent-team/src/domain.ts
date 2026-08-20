@@ -18,7 +18,9 @@ export interface TeamMember {
 export function assertValidMemberId(id: MemberId): void {
   if (!id.trim()) throw new Error("Member id must not be empty or whitespace-only");
   if (id === "user" || id === "runtime")
-    throw new Error(`Member id "${id}" collides with a reserved principal id; choose a different id`);
+    throw new Error(
+      `Member id "${id}" collides with a reserved principal id; choose a different id`,
+    );
 }
 
 export type Channel =
@@ -55,10 +57,12 @@ export interface MessageEnvelope {
 
 /**
  * Control-plane team state supplied on every wake so members never reconstruct
- * it from message history. Claim resources are team-visible by design; groups
- * include only those the waking member belongs to. Polls are open ballots
- * only — once closed, the result is a public message, not live state (same
- * lifecycle as claims: released claims drop out of `claims` too).
+ * it from message history. Explicit work claim resources are team-visible by
+ * design. A restricted group's implicit channel claim is visible only to that
+ * group's members, matching the group's metadata visibility. Groups include
+ * only those the waking member belongs to. Polls are open ballots only — once
+ * closed, the result is a public message, not live state (released claims drop
+ * out of `claims` too).
  */
 export interface TeamDigest {
   states: Readonly<Record<MemberId, TeamMemberState>>;

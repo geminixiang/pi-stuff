@@ -31,6 +31,13 @@ import {
  */
 export const REPORTER_RESOURCE = "reporter";
 
+type ClaimAudience = { kind: "team" } | { kind: "group"; groupId: ChannelId };
+
+interface ClaimRecord {
+  owner: MemberId;
+  audience: ClaimAudience;
+}
+
 export interface TeamRuntimeOptions {
   maxTurns?: number;
   actionTimeoutMs?: number;
@@ -117,7 +124,7 @@ export class TeamRuntime {
    * messages, handoffs) keep running concurrently, unaffected.
    */
   private readonly readyCause = new Map<MemberId, MessageId>();
-  private readonly claims = new Map<string, MemberId>();
+  private readonly claims = new Map<string, ClaimRecord>();
   private readonly polls = new Map<string, OpenPoll>();
   private readonly closedPolls = new Map<string, PollResult>();
   private readonly readyPolls = new Set<string>();
@@ -428,8 +435,7 @@ export class TeamRuntime {
             ? // Every non-finished member is terminally errored: this state can
               // never change, unlike a genuine stuck quiescence.
               ({ kind: "quiescent", meaning: "errored-members-remain" } as const)
-            : this.blocked.size ===
-                this.agents.size - this.finished.size - this.errored.size
+            : this.blocked.size === this.agents.size - this.finished.size - this.errored.size
               ? // Every remaining non-terminal member deliberately blocked,
                 // paused for external intervention — a stable, honest state,
                 // distinct from a team that got stuck without choosing to.
@@ -593,9 +599,7 @@ export class TeamRuntime {
    */
   private runnable(memberId: MemberId): boolean {
     return (
-      !this.finished.has(memberId) &&
-      !this.errored.has(memberId) &&
-      !this.blocked.has(memberId)
+      !this.finished.has(memberId) && !this.errored.has(memberId) && !this.blocked.has(memberId)
     );
   }
 
@@ -818,9 +822,7 @@ export class TeamRuntime {
         // for *any* implementation, not only PiTeamAgent's.
         const terminalIndex = commands.findIndex(
           (command) =>
-            command.type === "wait" ||
-            command.type === "finish" ||
-            command.type === "block",
+            command.type === "wait" || command.type === "finish" || command.type === "block",
         );
         const effective = terminalIndex === -1 ? commands : commands.slice(0, terminalIndex + 1);
         const budget = Math.max(1, this.options.maxCommandsPerTurn ?? 16);
@@ -947,7 +949,9 @@ export class TeamRuntime {
       this.finished.set(from, command.summary);
       this.states.set(from, "finished");
       this.record("member.finished", from, undefined, { summaryHash: sha256(command.summary) });
-      this.emitActivity(from, "finish", command.summary, { kind: "direct", memberId: from }, [from]);
+      this.emitActivity(from, "finish", command.summary, { kind: "direct", memberId: from }, [
+        from,
+      ]);
       this.releaseClaims(from, "member-finished");
       this.recheckOpenPollsAfterTerminalTransition();
       return;
@@ -957,11 +961,15 @@ export class TeamRuntime {
       return;
     }
     if (command.type === "release") {
-      const owner = this.claims.get(command.resource);
-      if (owner !== from)
+      const claim = this.claims.get(command.resource);
+      if (claim?.owner !== from) {
+        const visible = !claim || this.claimVisibleTo(claim, from);
         throw new Error(
-          `cannot release ${command.resource}: ${owner ? `owned by ${owner}` : "not currently claimed"}`,
+          visible
+            ? `cannot release ${command.resource}: ${claim ? `owned by ${claim.owner}` : "not currently claimed"}`
+            : "cannot release private resource: unavailable",
         );
+      }
       this.releaseClaim(command.resource, from, "released-by-owner");
       return;
     }
@@ -1056,10 +1064,16 @@ export class TeamRuntime {
     if (this.errored.has(to)) throw new Error(`recipient ${to} errored and cannot be woken`);
   }
 
+  private claimVisibleTo(claim: ClaimRecord, memberId: MemberId): boolean {
+    if (claim.audience.kind === "team") return true;
+    const group = this.groups.get(claim.audience.groupId);
+    return claim.owner === memberId || group?.members.includes(memberId) === true;
+  }
+
   private claim(from: MemberId, resource: string): void {
-    const owner = this.claims.get(resource);
-    if (!owner) {
-      this.claims.set(resource, from);
+    const claim = this.claims.get(resource);
+    if (!claim) {
+      this.claims.set(resource, { owner: from, audience: { kind: "team" } });
       if (resource === REPORTER_RESOURCE) this.claimedReporter = from;
       this.record("member.claimed", from, undefined, { resource });
       this.emitActivity(from, "claim", `claimed ${resource}`, { kind: "direct", memberId: from }, [
@@ -1074,7 +1088,29 @@ export class TeamRuntime {
       );
       return;
     }
+    const owner = claim.owner;
     if (owner !== from) {
+      if (!this.claimVisibleTo(claim, from)) {
+        this.record("member.claimRejected", from, undefined, {
+          resourceHash: sha256(resource),
+          privateResource: true,
+        });
+        this.emitActivity(
+          from,
+          "claim",
+          "private resource unavailable",
+          { kind: "direct", memberId: from },
+          [from],
+        );
+        this.post(
+          "runtime",
+          { kind: "direct", memberId: from },
+          "CLAIM_REJECTED private_resource=unavailable",
+          "interrupt",
+          "system",
+        );
+        return;
+      }
       this.record("member.claimRejected", from, undefined, { resource, owner });
       this.emitActivity(
         from,
@@ -1094,41 +1130,50 @@ export class TeamRuntime {
   }
 
   private releaseClaims(owner: MemberId, reason: string): void {
-    for (const [resource, holder] of this.claims)
-      if (holder === owner) this.releaseClaim(resource, owner, reason);
+    for (const [resource, claim] of this.claims)
+      if (claim.owner === owner) this.releaseClaim(resource, owner, reason);
   }
 
   private releaseClaim(resource: string, owner: MemberId, reason: string): void {
+    const claim = this.claims.get(resource);
     this.claims.delete(resource);
     // Finishing releases the claim (so another member could take over) but
     // keeps the duty: a reporter who finished their work still reports.
     // A voluntary release is a renunciation; an error means the session
     // can't be trusted to take the report turn.
-    if (resource === REPORTER_RESOURCE && this.claimedReporter === owner && reason !== "member-finished")
+    if (
+      resource === REPORTER_RESOURCE &&
+      this.claimedReporter === owner &&
+      reason !== "member-finished"
+    )
       this.claimedReporter = undefined;
     this.record("claim.released", owner, undefined, { resource, reason });
     this.emitActivity(owner, "claim", `released ${resource}`, { kind: "direct", memberId: owner }, [
       owner,
     ]);
+    const target: ChannelTarget =
+      claim?.audience.kind === "group" && this.groups.has(claim.audience.groupId)
+        ? { kind: "group", channelId: claim.audience.groupId }
+        : { kind: "public" };
     this.post(
       "runtime",
-      { kind: "public" },
+      target,
       `CLAIM_RELEASED resource=${JSON.stringify(resource)} former=${owner} reason=${reason}`,
       "passive",
       "system",
     );
   }
 
-  private openPoll(
-    from: MemberId,
-    command: Extract<TeamCommand, { type: "vote-open" }>,
-  ): void {
+  private openPoll(from: MemberId, command: Extract<TeamCommand, { type: "vote-open" }>): void {
     const { pollId, initiatorVotes, maxReminders, onReminderExhausted } = command;
     if (!pollId.trim()) throw new Error("poll id must not be empty");
     if (this.closedPolls.has(pollId)) throw new Error(`poll already closed: ${pollId}`);
     if (this.polls.has(pollId)) throw new Error(`poll already open: ${pollId}`);
-    if (this.claims.get(pollId) !== from)
-      throw new Error(`must hold claim ${pollId} before opening that poll`);
+    const pollClaim = this.claims.get(pollId);
+    if (pollClaim?.owner !== from || pollClaim.audience.kind !== "team")
+      throw new Error(
+        `must hold claim ${pollId} before opening that poll; claim must be team-visible`,
+      );
     if (typeof initiatorVotes !== "boolean") throw new Error("initiatorVotes must be boolean");
     if (!Number.isInteger(maxReminders) || maxReminders < 0 || maxReminders > 3)
       throw new Error("maxReminders must be an integer from 0 to 3");
@@ -1175,7 +1220,9 @@ export class TeamRuntime {
     poll.autoAbstained.delete(from);
     poll.votes.set(from, choice);
     this.record("poll.cast", from, undefined, { pollId, choice });
-    this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    this.emitActivity(from, "vote", `voted on ${pollId}`, { kind: "direct", memberId: from }, [
+      from,
+    ]);
     this.maybeAnnouncePollReady(pollId, poll);
   }
 
@@ -1185,7 +1232,9 @@ export class TeamRuntime {
     poll.autoAbstained.delete(from);
     poll.abstained.add(from);
     this.record("poll.abstained", from, undefined, { pollId, automatic: false });
-    this.emitActivity(from, "vote", `abstained on ${pollId}`, { kind: "direct", memberId: from }, [from]);
+    this.emitActivity(from, "vote", `abstained on ${pollId}`, { kind: "direct", memberId: from }, [
+      from,
+    ]);
     this.maybeAnnouncePollReady(pollId, poll);
   }
 
@@ -1196,11 +1245,12 @@ export class TeamRuntime {
     // id and cast directly keep the former all-member electorate and no
     // reminder policy. New callers should use team_vote_open.
     if (!poll) {
-      if (!this.claims.has(pollId))
-        throw new Error(`must claim ${pollId} before opening a new poll with that id`);
+      const pollClaim = this.claims.get(pollId);
+      if (!pollClaim || pollClaim.audience.kind !== "team")
+        throw new Error("must hold claim before opening that poll; claim must be team-visible");
       poll = {
         explicit: false,
-        initiator: this.claims.get(pollId)!,
+        initiator: pollClaim.owner,
         initiatorVotes: true,
         maxReminders: 0,
         onReminderExhausted: "leave-missing",
@@ -1232,13 +1282,7 @@ export class TeamRuntime {
         "system",
       );
     else
-      this.post(
-        "runtime",
-        { kind: "public" },
-        `POLL_FULLY_CAST ${details}`,
-        "interrupt",
-        "system",
-      );
+      this.post("runtime", { kind: "public" }, `POLL_FULLY_CAST ${details}`, "interrupt", "system");
   }
 
   private recheckOpenPollsAfterTerminalTransition(): void {
@@ -1367,9 +1411,13 @@ export class TeamRuntime {
     requestedMembers: readonly MemberId[],
   ): void {
     if (this.groups.has(channelId)) throw new Error(`Group already exists: ${channelId}`);
-    const holder = this.claims.get(channelId);
-    if (holder !== undefined && holder !== creator)
+    const existingClaim = this.claims.get(channelId);
+    const holder = existingClaim?.owner;
+    if (holder !== undefined && holder !== creator) {
+      if (existingClaim && !this.claimVisibleTo(existingClaim, creator))
+        throw new Error("cannot create group: channel id unavailable");
       throw new Error(`cannot create group ${channelId}: its id is claimed by ${holder}`);
+    }
     const resolvedMembers = requestedMembers.map((candidate) => this.resolveMemberId(candidate));
     // Creation is its own arbitration point: an unclaimed id is claimed
     // atomically with the create, so a private room takes one turn instead of
@@ -1380,7 +1428,10 @@ export class TeamRuntime {
     // above. The claim is set only after member resolution so a bad member
     // name leaves no state behind.
     if (holder === undefined) {
-      this.claims.set(channelId, creator);
+      this.claims.set(channelId, {
+        owner: creator,
+        audience: { kind: "group", groupId: channelId },
+      });
       if (channelId === REPORTER_RESOURCE) this.claimedReporter = creator;
       this.record("member.claimed", creator, undefined, { resource: channelId });
     }
@@ -1490,11 +1541,19 @@ export class TeamRuntime {
     return Object.freeze({
       states: Object.freeze(Object.fromEntries(this.states)),
       blockedReasons: Object.freeze(Object.fromEntries(this.blocked)),
-      claims: Object.freeze(Object.fromEntries(this.claims)),
+      claims: Object.freeze(
+        Object.fromEntries(
+          [...this.claims]
+            .filter(([, claim]) => this.claimVisibleTo(claim, memberId))
+            .map(([resource, claim]) => [resource, claim.owner]),
+        ),
+      ),
       groups: Object.freeze(
         [...this.groups.values()]
           .filter((group) => group.members.includes(memberId))
-          .map((group) => Object.freeze({ id: group.id, name: group.name, members: group.members })),
+          .map((group) =>
+            Object.freeze({ id: group.id, name: group.name, members: group.members }),
+          ),
       ),
       polls: Object.freeze(
         [...this.polls.entries()].map(([pollId, poll]) => {
