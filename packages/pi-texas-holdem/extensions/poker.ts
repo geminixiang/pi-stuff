@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type KeybindingsManager, type TUI } from "@earendil-works/pi-tui";
+import { describeHand, evaluateBestHand } from "../src/engine/evaluator.ts";
 import { formatCard } from "../src/engine/cards.ts";
 import type { Action, Street } from "../src/engine/types.ts";
 import { centerOnRow, layoutTable, stampBlock } from "../src/engine/ring.ts";
@@ -119,8 +120,18 @@ function buildTableGrid(state: PublicTableState, mySeatIndex: number | null): st
 	const potTotal = state.seats.reduce((sum, s) => sum + (s ? s.committed : 0), 0) + state.pots.reduce((sum, p) => sum + p.amount, 0);
 	const communityRow = layout.padTop + 6;
 	const potRow = layout.padTop + 7;
+	const handRow = layout.padTop + 8;
 	rows[communityRow] = centerOnRow(rows[communityRow] as string, cardsText);
 	rows[potRow] = centerOnRow(rows[potRow] as string, `Pot  ${potTotal.toLocaleString()}`);
+	const mySeat = mySeatIndex === null ? null : state.seats[mySeatIndex];
+	const holeCards = mySeat?.holeCards.filter((card): card is NonNullable<typeof card> => card !== null) ?? [];
+	if (holeCards.length === 2) {
+		const availableCards = [...holeCards, ...state.communityCards];
+		const handText = availableCards.length >= 5
+			? describeHand(evaluateBestHand(availableCards))
+			: describeHand(holeCards);
+		rows[handRow] = centerOnRow(rows[handRow] as string, `Your hand: ${handText}`);
+	}
 
 	state.seats.forEach((seat, index) => {
 		const anchor = layout.seatAnchors[index];

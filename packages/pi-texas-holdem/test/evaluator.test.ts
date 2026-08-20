@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Card } from "../src/engine/types.ts";
-import { compareEvaluations, evaluateBestHand } from "../src/engine/evaluator.ts";
+import { compareEvaluations, describeHand, evaluateBestHand } from "../src/engine/evaluator.ts";
 
 function cards(spec: string): Card[] {
 	// spec like "As Kd Qh Jc 10s" -> rank 2-10 or A/K/Q/J, suit s/h/d/c
@@ -60,6 +60,14 @@ test("two pair compares the higher pair first, then the lower pair, then kicker"
 	assert.equal(better.category, "twoPair");
 	assert.equal(worse.category, "twoPair");
 	assert.ok(compareEvaluations(better, worse) > 0);
+});
+
+test("describes hands in beginner-friendly language", () => {
+	assert.equal(describeHand(cards("As Ah")), "Pair of Aces");
+	assert.equal(describeHand(cards("As 10s")), "Ace high · suited");
+	assert.equal(describeHand(evaluateBestHand(cards("Ks Kh 9d 9c 2h 3c 7d"))), "Two Pair · Kings and 9s");
+	assert.equal(describeHand(evaluateBestHand(cards("Ks Kh Kd 9c 9h 2c 3d"))), "Full House · Kings over 9s");
+	assert.equal(describeHand(evaluateBestHand(cards("As 2s 3d 4h 5c 9h Kc"))), "Straight · 5 high");
 });
 
 test("identical hands tie", () => {

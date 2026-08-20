@@ -114,6 +114,45 @@ export function categoryLabel(category: HandCategory): string {
 	}
 }
 
+function rankLabel(rank: number): string {
+	if (rank === 14) return "Ace";
+	if (rank === 13) return "King";
+	if (rank === 12) return "Queen";
+	if (rank === 11) return "Jack";
+	return String(rank);
+}
+
+/** A beginner-facing description of a made hand or two-card starting hand. */
+export function describeHand(input: HandEvaluation | Card[]): string {
+	if (Array.isArray(input)) {
+		if (input.length !== 2) throw new Error("A starting hand description needs exactly two cards");
+		const [first, second] = input;
+		if (first!.rank === second!.rank) return `Pair of ${rankLabel(first!.rank)}s`;
+		return `${rankLabel(Math.max(first!.rank, second!.rank))} high${first!.suit === second!.suit ? " · suited" : ""}`;
+	}
+
+	const label = categoryLabel(input.category);
+	switch (input.category) {
+		case "highCard":
+			return `${rankLabel(input.tiebreak[0]!)} High`;
+		case "pair":
+			return `Pair of ${rankLabel(input.tiebreak[0]!)}s`;
+		case "twoPair":
+			return `Two Pair · ${rankLabel(input.tiebreak[0]!)}s and ${rankLabel(input.tiebreak[1]!)}s`;
+		case "trips":
+			return `Three of a Kind · ${rankLabel(input.tiebreak[0]!)}s`;
+		case "straight":
+		case "straightFlush":
+			return `${label} · ${rankLabel(input.tiebreak[0]!)} high`;
+		case "flush":
+			return `Flush · ${rankLabel(input.tiebreak[0]!)} high`;
+		case "fullHouse":
+			return `Full House · ${rankLabel(input.tiebreak[0]!)}s over ${rankLabel(input.tiebreak[1]!)}s`;
+		case "quads":
+			return `Four of a Kind · ${rankLabel(input.tiebreak[0]!)}s`;
+	}
+}
+
 export function categoryFromRank(rank: number): HandCategory {
 	return CATEGORY_BY_RANK[rank] as HandCategory;
 }
