@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { TeamActivity, TeamProgress, TeamResult } from "../src/domain.js";
 import {
+  MAX_TEAM_ROUND_SUMMARIES,
   MAX_TEAM_RUN_EVENTS,
   TeamRunManager,
   type ManagedTeamRuntime,
@@ -104,12 +105,68 @@ const activity: TeamActivity = {
   targetIds: ["a"],
 };
 
+test("three rounds retain stable identity, sessions, and monotonic round identities", async () => {
+  const manager = new TeamRunManager();
+  const runtime = new FakeRuntime("stable-team");
+  const first = manager.start(runtime, { channel: { kind: "public" }, body: "one" });
+  runtime.pending.resolve(result("stable-team", "one"));
+  const one = await manager.wait("stable-team", { afterSeq: first.stateChangeSeq, timeoutMs: 1_000 });
+  const twoStarted = manager.prompt("stable-team", "a", "two");
+  runtime.continuation!.pending.resolve(result("stable-team", "two"));
+  const two = await manager.wait("stable-team", { afterSeq: twoStarted.stateChangeSeq, timeoutMs: 1_000 });
+  const threeStarted = manager.prompt("stable-team", "a", "three");
+  runtime.continuation!.continuation!.pending.resolve(result("stable-team", "three"));
+  const three = await manager.wait("stable-team", { afterSeq: threeStarted.stateChangeSeq, timeoutMs: 1_000 });
+
+  assert.equal(three.teamId, first.teamId);
+  assert.deepEqual(three.rounds.map((round) => round.roundIndex), [1, 2, 3]);
+  assert.equal(new Set(three.rounds.map((round) => round.roundId)).size, 3);
+  assert.deepEqual(three.rounds.map((round) => round.result?.members[0].sessionId), ["session-a", "session-a", "session-a"]);
+  assert.ok(two.stateChangeSeq < threeStarted.stateChangeSeq);
+});
+
+test("round history is capped without invalidating the stable handle", async () => {
+  const manager = new TeamRunManager();
+  let runtime = new FakeRuntime("history-team");
+  let snapshot = manager.start(runtime, { channel: { kind: "public" }, body: "one" });
+  runtime.pending.resolve(result("history-team"));
+  snapshot = await manager.wait("history-team", { afterSeq: snapshot.stateChangeSeq, timeoutMs: 1_000 });
+  for (let index = 2; index <= MAX_TEAM_ROUND_SUMMARIES + 2; index++) {
+    snapshot = manager.prompt("history-team", "a", `round ${index}`);
+    runtime = runtime.continuation!;
+    runtime.pending.resolve(result("history-team"));
+    snapshot = await manager.wait("history-team", { afterSeq: snapshot.stateChangeSeq, timeoutMs: 1_000 });
+  }
+  assert.equal(snapshot.rounds.length, MAX_TEAM_ROUND_SUMMARIES);
+  assert.equal(snapshot.rounds[0].roundIndex, 3);
+  assert.equal(snapshot.rounds.at(-1)?.roundId, snapshot.roundId);
+  assert.equal(manager.get("history-team").teamId, "history-team");
+});
+
+test("late callbacks and completion from a cancelled round cannot mutate its continuation", async () => {
+  class LateRuntime extends FakeRuntime {
+    override run(): Promise<TeamResult> { return this.pending.promise; }
+  }
+  const manager = new TeamRunManager();
+  const runtime = new LateRuntime("race-team");
+  const first = manager.start(runtime, { channel: { kind: "public" }, body: "one" });
+  manager.cancel("race-team", "stop");
+  runtime.pending.reject(new Error("cancelled late"));
+  await manager.wait("race-team", { afterSeq: first.stateChangeSeq, timeoutMs: 1_000 });
+  const second = manager.prompt("race-team", "a", "two");
+  manager.observeProgress("race-team", progress("race-team"), first.roundId);
+  assert.equal(manager.get("race-team").progress, undefined);
+  assert.equal(manager.get("race-team").roundId, second.roundId);
+});
 test("detached runs return immediately, wait by sequence without polling, and expose a bounded result", async () => {
   const manager = new TeamRunManager();
   const runtime = new FakeRuntime("run-1");
   const started = manager.start(runtime, { channel: { kind: "public" }, body: "start" });
   assert.equal(started.status, "running");
   assert.equal(started.runId, "run-1");
+  assert.equal(started.teamId, "run-1");
+  assert.equal(started.roundIndex, 1);
+  assert.notEqual(started.roundId, started.teamId);
 
   const waiting = manager.wait("run-1", { afterSeq: started.stateChangeSeq, timeoutMs: 1_000 });
   manager.observeProgress("run-1", progress("run-1"));
@@ -143,6 +200,9 @@ test("a settled team accepts a new prompt as a fresh round over the same handle"
   const continued = manager.prompt("run-continue", "a", "do a different task");
   assert.equal(continued.status, "running");
   assert.equal(continued.runId, "run-continue");
+  assert.equal(continued.teamId, settled.teamId);
+  assert.equal(continued.roundIndex, 2);
+  assert.notEqual(continued.roundId, settled.roundId);
   assert.equal(runtime.continuation?.objective, "do a different task");
   assert.equal(runtime.continuation?.continuationOptions?.reporterId, "a");
   assert.match(runtime.continuation?.continuationOptions?.reportPrompt ?? "", /Reply directly/);
@@ -156,6 +216,7 @@ test("a settled team accepts a new prompt as a fresh round over the same handle"
   });
   assert.equal(second.status, "settled");
   assert.equal(second.result?.report?.body, "second done");
+  assert.deepEqual(second.rounds.map((round) => round.roundIndex), [1, 2]);
   assert.ok(second.events.some((event) => event.summary === "continued team by prompting member a"));
 });
 
@@ -197,7 +258,7 @@ test("event history is capped and activity bodies are reduced to lightweight sum
   assert.equal(snapshot.events.at(-1)?.summary, "a wake");
 });
 
-test("cancel has its own signal, wakes waiters, and terminal or invalid mutations fail explicitly", async () => {
+test("cancel has its own signal, wakes waiters, is idempotent, and permits continuation", async () => {
   const manager = new TeamRunManager();
   const runtime = new FakeRuntime("run-cancel");
   const started = manager.start(runtime, { channel: { kind: "public" }, body: "start" });
@@ -212,10 +273,15 @@ test("cancel has its own signal, wakes waiters, and terminal or invalid mutation
   );
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(manager.get("run-cancel").status, "cancelled");
-  assert.throws(() => manager.prompt("run-cancel", "a", "resume"), /no longer accepts/);
-  assert.throws(() => manager.cancel("run-cancel"), /no longer accepts/);
-  assert.throws(() => manager.get("missing"), /Unknown team run/);
+  const cancelled = manager.get("run-cancel");
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.lifecycle, "available");
+  assert.equal(manager.cancel("run-cancel").roundId, cancelled.roundId);
+  const continued = manager.prompt("run-cancel", "a", "resume");
+  assert.equal(continued.status, "running");
+  assert.equal(continued.roundIndex, 2);
+  assert.notEqual(continued.roundId, cancelled.roundId);
+  assert.throws(() => manager.get("missing"), /Unknown team/);
 });
 
 test("wait times out and caller abort does not cancel the detached run", async () => {

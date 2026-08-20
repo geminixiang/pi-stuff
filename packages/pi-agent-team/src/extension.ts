@@ -128,15 +128,16 @@ export default function agentTeam(pi: ExtensionAPI): void {
           params.members.map((member) => [member.id, new PiTeamAgent(member, ctx.cwd, ctx)]),
         );
         let runtime!: TeamRuntime;
+        const roundId = crypto.randomUUID();
         runtime = new TeamRuntime(params.objective, agents, {
           reactionDelayMs: { min: 50, max: 500 },
           waitForIntervention: true,
           reporterId,
           reportPrompt: params.reportPrompt,
-          onActivity: (activity) => runs.observeActivity(runtime.teamId, activity),
-          onProgress: (progress) => runs.observeProgress(runtime.teamId, progress),
+          onActivity: (activity) => runs.observeActivity(runtime.teamId, activity, roundId),
+          onProgress: (progress) => runs.observeProgress(runtime.teamId, progress, roundId),
         });
-        const snapshot = runs.start(runtime, initial);
+        const snapshot = runs.start(runtime, initial, { roundId });
         return {
           content: [{ type: "text", text: renderRunSnapshot(snapshot) }],
           details: snapshot,
@@ -198,10 +199,17 @@ export default function agentTeam(pi: ExtensionAPI): void {
       let retained = false;
       try {
         const result = await runtime.run(initial, signal);
-        runs.retain(runtime, result);
+        const retainedSnapshot = runs.retain(runtime, result);
         retained = true;
         return {
-          content: [{ type: "text", text: renderFinalContent(result, params.members) }],
+          content: [{
+            type: "text",
+            text: renderFinalContent(result, params.members, {
+              roundId: retainedSnapshot.roundId,
+              roundIndex: retainedSnapshot.roundIndex,
+              objective: retainedSnapshot.objective,
+            }),
+          }],
           details: finalDetails(details(), result),
         };
       } finally {
@@ -315,21 +323,34 @@ function registerTeamCancel(pi: ExtensionAPI, runs: TeamRunManager): void {
       {
         runId: Type.String({ minLength: 1 }),
         reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1_000 })),
+        roundId: Type.Optional(
+          Type.String({
+            minLength: 1,
+            description: "Optional observed round identity; a stale retry becomes a no-op instead of cancelling a newer round.",
+          }),
+        ),
       },
       { additionalProperties: false },
     ),
     async execute(_id, params) {
-      return snapshotResult(runs.cancel(params.runId, params.reason));
+      return snapshotResult(runs.cancel(params.runId, params.reason, params.roundId));
     },
   });
 }
 
 function renderRunSnapshot(snapshot: TeamRunSnapshot): string {
   const lines = [
-    `team run: ${snapshot.runId}`,
-    `status: ${snapshot.status}`,
+    `team: ${snapshot.teamId}`,
+    `team lifecycle: ${snapshot.lifecycle}`,
+    `round: ${snapshot.roundId} (#${snapshot.roundIndex})`,
+    `objective: ${snapshot.objective}`,
+    `round status: ${snapshot.status}`,
     `stateChangeSeq: ${snapshot.stateChangeSeq}`,
   ];
+  if (snapshot.cancellation)
+    lines.push(
+      `cancellation: requested at ${new Date(snapshot.cancellation.requestedAt).toISOString()} · ${snapshot.cancellation.reason}`,
+    );
   if (snapshot.progress)
     lines.push(
       `progress: ${snapshot.progress.turns} turns · ${snapshot.progress.finished.length} finished · ${snapshot.progress.blocked.length} blocked`,
@@ -364,6 +385,10 @@ function renderRunSnapshot(snapshot: TeamRunSnapshot): string {
     );
   }
   if (snapshot.error) lines.push(`error: ${snapshot.error}`);
+  if (snapshot.rounds.length)
+    lines.push(
+      `round history: ${snapshot.rounds.map((round) => `#${round.roundIndex} ${round.roundId} ${round.status}`).join(" · ")}`,
+    );
   const latest = snapshot.events.at(-1);
   if (latest) lines.push(`latest event: #${latest.sequence} ${latest.type} · ${latest.summary}`);
   return lines.join("\n");
@@ -384,7 +409,21 @@ function summarizeLive(details: TeamDisplayDetails): string {
 export function renderFinalContent(
   result: TeamResult,
   members: readonly { id: string; name: string }[],
+  round?: { roundId: string; roundIndex: number; objective?: string },
 ): string {
+  const resultRound = result as TeamResult & {
+    roundId?: string;
+    roundIndex?: number;
+    objective?: string;
+  };
+  const manifestRound = round ??
+    (resultRound.roundId !== undefined && resultRound.roundIndex !== undefined
+      ? {
+          roundId: resultRound.roundId,
+          roundIndex: resultRound.roundIndex,
+          objective: resultRound.objective,
+        }
+      : undefined);
   const nameOf = (id: string) => members.find((member) => member.id === id)?.name ?? id;
   const lines: string[] = [];
   if (result.report) {
@@ -404,8 +443,19 @@ export function renderFinalContent(
   }
   lines.push(
     "TEAM MANIFEST",
-    `team: ${result.teamId}`,
-    `settlement: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+    `team handle: ${result.teamId}`,
+    ...(manifestRound
+      ? [
+          `round id: ${manifestRound.roundId}`,
+          `round index: ${manifestRound.roundIndex}`,
+          ...(manifestRound.objective !== undefined
+            ? [`objective: ${manifestRound.objective}`]
+            : []),
+          `round outcome: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+        ]
+      : [
+          `settlement: ${result.settlement.kind} (${result.settlement.meaning}; objective correctness unverified)`,
+        ]),
     "members:",
   );
   for (const member of result.members) {
@@ -419,7 +469,7 @@ export function renderFinalContent(
     `messages: ${result.publicTranscript.length} public · ${result.restrictedMessages.length} restricted (bodies not included here)`,
     `audit: ${result.events.length} events · head ${result.auditHead}`,
     "Each member's full first-person history is in its session file listed above.",
-    `The team remains available in this parent session: use team_prompt with runId ${result.teamId} and a member id to start a continuation round.`,
+    `The team remains available in this parent session: use team_prompt with runId ${result.teamId} (the stable team handle) and a member id to start a continuation round.`,
   );
   return lines.join("\n");
 }
