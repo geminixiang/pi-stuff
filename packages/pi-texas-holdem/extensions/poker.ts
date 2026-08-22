@@ -1,0 +1,567 @@
+import crypto from "node:crypto";
+import os from "node:os";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, type Component, type KeybindingsManager, type TUI } from "@earendil-works/pi-tui";
+import { describeHand, evaluateBestHand } from "../src/engine/evaluator.ts";
+import { formatCard } from "../src/engine/cards.ts";
+import type { Action, Street } from "../src/engine/types.ts";
+import { centerOnRow, layoutTable, stampBlock } from "../src/engine/ring.ts";
+import type { PublicSeat, PublicTableState } from "../src/engine/view.ts";
+import type { ChatMessage } from "../src/net/protocol.ts";
+import { createBotsSession } from "../src/session/bots.ts";
+import { createHostSession } from "../src/session/host.ts";
+import { createJoinSession } from "../src/session/join.ts";
+import type { GameSession } from "../src/session/types.ts";
+import { createPersonalRoom, normalizeWorkerEndpoint } from "../src/ui/cloud.ts";
+import { normalizeRoomUrl, parsePokerCommand, shareableRoomUrl } from "../src/ui/commands.ts";
+
+const CHAT_PANEL_LINES = 4;
+
+const RING_WIDTH = 75;
+const RING_HEIGHT = 15;
+const SEAT_HALF_WIDTH = 10;
+const SEAT_HALF_HEIGHT = 3;
+const BOX_INNER = 17;
+const DEFAULT_STARTING_STACK = 2000;
+const DEFAULT_SMALL_BLIND = 10;
+const DEFAULT_BIG_BLIND = 20;
+
+// ---------- token usage ----------
+
+interface UsageLike {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+function isUsageLike(value: unknown): value is UsageLike {
+	if (typeof value !== "object" || value === null) return false;
+	const usage = value as Record<string, unknown>;
+	return (
+		typeof usage.input === "number" &&
+		typeof usage.output === "number" &&
+		typeof usage.cacheRead === "number" &&
+		typeof usage.cacheWrite === "number"
+	);
+}
+
+/** Sums input+output+cache tokens for today (local time) across the current session's entries. */
+function todaysTokenUsage(ctx: ExtensionContext): number {
+	const startOfDay = new Date();
+	startOfDay.setHours(0, 0, 0, 0);
+	let total = 0;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		const timestamp = (entry as { timestamp?: string }).timestamp;
+		if (timestamp && new Date(timestamp) < startOfDay) continue;
+
+		if (entry.type === "message") {
+			const message = (entry as { message?: { role?: string; usage?: unknown } }).message;
+			if (message && (message.role === "assistant" || message.role === "toolResult") && isUsageLike(message.usage)) {
+				total += message.usage.input + message.usage.output + message.usage.cacheRead + message.usage.cacheWrite;
+			}
+		} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+			const usage = (entry as { usage?: unknown }).usage;
+			if (isUsageLike(usage)) total += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+		}
+	}
+	return total;
+}
+
+function formatTokenCount(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+	return String(n);
+}
+
+// ---------- rendering ----------
+
+function padTo(text: string, width: number): string {
+	const chars = [...text];
+	if (chars.length >= width) return chars.slice(0, width).join("");
+	return text + " ".repeat(width - chars.length);
+}
+
+function formatSeatBox(
+	seat: PublicSeat | null,
+	opts: { isMe: boolean; isDealer: boolean; isSB: boolean; isBB: boolean; isTurn: boolean; folded: boolean },
+): string[] {
+	const top = opts.isTurn ? `┏${"━".repeat(BOX_INNER)}┓` : `┌${"─".repeat(BOX_INNER)}┐`;
+	const bottom = opts.isTurn ? `┗${"━".repeat(BOX_INNER)}┛` : `└${"─".repeat(BOX_INNER)}┘`;
+	const side = opts.isTurn ? "┃" : "│";
+
+	if (!seat) {
+		return [top, `${side} ${padTo("(open seat)", BOX_INNER - 1)}${side}`, `${side}${" ".repeat(BOX_INNER)}${side}`, `${side}${" ".repeat(BOX_INNER)}${side}`, bottom];
+	}
+
+	const tags = [opts.isDealer && "D", opts.isSB && "SB", opts.isBB && "BB", opts.isMe && "YOU"].filter(Boolean).join(" ");
+	const nameText = tags ? `[${tags}] ${seat.displayName}` : seat.displayName;
+	const cardsText = seat.status === "folded" ? "folded" : seat.holeCards.map((c) => (c ? formatCard(c) : "??")).join(" ");
+
+	return [
+		top,
+		`${side} ${padTo(nameText, BOX_INNER - 1)}${side}`,
+		`${side} ${padTo(`$${seat.stack.toLocaleString()}`, BOX_INNER - 1)}${side}`,
+		`${side} ${padTo(cardsText, BOX_INNER - 1)}${side}`,
+		bottom,
+	];
+}
+
+function buildTableGrid(state: PublicTableState, mySeatIndex: number | null): string[] {
+	const layout = layoutTable(RING_WIDTH, RING_HEIGHT, state.seats.length, {
+		seatHalfWidth: SEAT_HALF_WIDTH,
+		seatHalfHeight: SEAT_HALF_HEIGHT,
+	});
+	let rows = layout.rows.slice();
+
+	const cardsText = state.communityCards.length
+		? state.communityCards.map((c) => `[${formatCard(c)}]`).join("  ")
+		: "-- pre-flop --";
+	const potTotal = state.seats.reduce((sum, s) => sum + (s ? s.committed : 0), 0) + state.pots.reduce((sum, p) => sum + p.amount, 0);
+	const communityRow = layout.padTop + 6;
+	const potRow = layout.padTop + 7;
+	const handRow = layout.padTop + 8;
+	rows[communityRow] = centerOnRow(rows[communityRow] as string, cardsText);
+	rows[potRow] = centerOnRow(rows[potRow] as string, `Pot  ${potTotal.toLocaleString()}`);
+	const mySeat = mySeatIndex === null ? null : state.seats[mySeatIndex];
+	const holeCards = mySeat?.holeCards.filter((card): card is NonNullable<typeof card> => card !== null) ?? [];
+	if (holeCards.length === 2) {
+		const availableCards = [...holeCards, ...state.communityCards];
+		const handText = availableCards.length >= 5
+			? describeHand(evaluateBestHand(availableCards))
+			: describeHand(holeCards);
+		rows[handRow] = centerOnRow(rows[handRow] as string, `Your hand: ${handText}`);
+	}
+
+	state.seats.forEach((seat, index) => {
+		const anchor = layout.seatAnchors[index];
+		if (!anchor) return;
+		const box = formatSeatBox(seat, {
+			isMe: mySeatIndex === index,
+			isDealer: state.dealerIndex === index,
+			isSB: false,
+			isBB: false,
+			isTurn: state.toActIndex === index,
+			folded: !!seat && seat.status === "folded",
+		});
+		rows = stampBlock(rows, anchor, box);
+	});
+
+	return rows;
+}
+
+function streetLabel(street: Street): string {
+	switch (street) {
+		case "preflop":
+			return "Preflop";
+		case "flop":
+			return "Flop";
+		case "turn":
+			return "Turn";
+		case "river":
+			return "River";
+		case "showdown":
+			return "Showdown";
+	}
+}
+
+interface RaiseUiState {
+	active: boolean;
+	amount: number;
+}
+
+interface ChatUiState {
+	active: boolean;
+	draft: string;
+}
+
+function formatChatLine(theme: Theme, msg: ChatMessage): string {
+	if (msg.seatIndex === null) return theme.fg("dim", `· ${msg.text}`);
+	return `${theme.fg("accent", msg.displayName)}: ${msg.text}`;
+}
+
+function renderOverlay(
+	session: GameSession,
+	theme: Theme,
+	raiseState: RaiseUiState,
+	chatState: ChatUiState,
+	ctx: ExtensionCommandContext,
+): string[] {
+	const state = session.getState();
+	const mySeatIndex = session.info.mySeatIndex;
+	const tokensToday = todaysTokenUsage(ctx);
+
+	const lines: string[] = [];
+	const headline = [
+		session.info.roomLabel,
+		`hand #${state.handNumber || 0}`,
+		streetLabel(state.street),
+		`today's tokens ${formatTokenCount(tokensToday)}`,
+	].join("   ·   ");
+	lines.push(theme.fg("accent", theme.bold(headline)));
+	lines.push("");
+
+	const grid = buildTableGrid(state, mySeatIndex);
+	for (const row of grid) lines.push(theme.fg("borderMuted", row));
+	lines.push("");
+
+	if (state.street === "showdown" && state.awards.length > 0) {
+		const idToName = new Map(state.seats.filter((s): s is NonNullable<typeof s> => !!s).map((s) => [s.id, s.displayName]));
+		const summary = state.awards.map((a) => `${idToName.get(a.seatIds[0] ?? "") ?? "?"} +${a.amount}`).join("  ·  ");
+		lines.push(theme.fg("success", `Winners: ${summary}`));
+		lines.push("");
+	}
+
+	const chatLog = session.getChatLog();
+	lines.push(theme.fg("dim", theme.bold("Chat")));
+	if (chatLog.length === 0) {
+		lines.push(theme.fg("dim", "  (no messages yet)"));
+	} else {
+		for (const msg of chatLog.slice(-CHAT_PANEL_LINES)) lines.push(`  ${formatChatLine(theme, msg)}`);
+	}
+	if (chatState.active) {
+		lines.push(theme.fg("accent", `> ${chatState.draft}_`));
+	}
+	lines.push("");
+
+	const legal = session.legalActionsForMe();
+	if (mySeatIndex === null) {
+		lines.push(theme.fg("warning", "Waiting for the host..."));
+	} else if (state.street === "showdown" && state.toActIndex === null) {
+		if (session.canStartHand()) {
+			lines.push(theme.fg("accent", "Press Enter to start the next hand   ·   Esc back to work"));
+		} else {
+			lines.push(theme.fg("dim", "Waiting for the host to start the next hand   ·   Esc back to work"));
+		}
+	} else if (legal && legal.canFold && raiseState.active) {
+		lines.push(
+			theme.fg(
+				"accent",
+				`Raise to ${raiseState.amount}   ·   +/- adjust   ·   Enter confirm   ·   Esc cancel`,
+			),
+		);
+	} else if (legal && legal.canFold) {
+		const parts = [`${theme.fg("error", "F")} fold`];
+		parts.push(legal.canCheck ? `${theme.fg("accent", "C")} check` : `${theme.fg("accent", "C")} call ${legal.callAmount}`);
+		if (legal.canBetOrRaise) parts.push(`${theme.fg("accent", "R")} raise`);
+		parts.push(`${theme.fg("accent", "A")} all-in`);
+		parts.push(`${theme.fg("dim", "Esc")} back to work`);
+		lines.push(parts.join("   "));
+	} else {
+		lines.push(theme.fg("dim", "Watching   ·   Esc back to work"));
+	}
+
+	if (!chatState.active && !raiseState.active) {
+		lines.push(theme.fg("dim", "Press / to chat"));
+	}
+
+	return lines;
+}
+
+// ---------- widget ----------
+
+function widgetLines(session: GameSession | null, ctx: ExtensionContext): string[] | undefined {
+	if (!session) return undefined;
+	const state = session.getState();
+	const tokensToday = todaysTokenUsage(ctx);
+	const mySeatIndex = session.info.mySeatIndex;
+	const legal = session.legalActionsForMe();
+
+	const parts = [`♠ ${session.info.roomLabel}`, `hand #${state.handNumber || 0}`];
+	if (mySeatIndex !== null && legal?.canFold) {
+		parts.push("your turn");
+	} else if (state.toActIndex !== null) {
+		const actingName = state.seats[state.toActIndex]?.displayName ?? "?";
+		parts.push(`${actingName} to act`);
+	}
+	const pot = state.seats.reduce((sum, s) => sum + (s ? s.committed : 0), 0) + state.pots.reduce((sum, p) => sum + p.amount, 0);
+	parts.push(`pot ${pot}`);
+	parts.push(`today's tokens ${formatTokenCount(tokensToday)}`);
+	const chatCount = session.getChatLog().length;
+	if (chatCount > 0) parts.push(`chat ${chatCount}`);
+	parts.push("/poker to open the table");
+	return [parts.join("  ·  ")];
+}
+
+// ---------- extension ----------
+
+export default function pokerExtension(pi: ExtensionAPI) {
+	let session: GameSession | null = null;
+
+	const refreshWidget = (ctx: ExtensionContext) => {
+		ctx.ui.setWidget("poker", widgetLines(session, ctx), { placement: "belowEditor" });
+	};
+
+	const closeSession = (ctx: ExtensionContext) => {
+		session?.close();
+		session = null;
+		ctx.ui.setWidget("poker", undefined);
+	};
+
+	const openTable = async (ctx: ExtensionCommandContext) => {
+		if (!session) {
+			ctx.ui.notify("No game is active. Start with /poker local, create a personal room with /poker create, or join with /poker join <room-url>.", "warning");
+			return;
+		}
+		const activeSession = session;
+		const raiseState: RaiseUiState = { active: false, amount: 0 };
+		const chatState: ChatUiState = { active: false, draft: "" };
+		const unsubscribe = activeSession.subscribe(() => refreshWidget(ctx));
+
+		await ctx.ui.custom<void>((tui: TUI, theme: Theme, _keybindings: KeybindingsManager, done: (result: void) => void) => {
+			const rerender = () => tui.requestRender();
+			const stop = activeSession.subscribe(rerender);
+
+			const submitAction = (action: Action) => {
+				try {
+					activeSession.act(action);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			};
+
+			return {
+				render(_width: number) {
+					return renderOverlay(activeSession, theme, raiseState, chatState, ctx);
+				},
+				invalidate() {},
+				handleInput(data: string) {
+					if (chatState.active) {
+						if (matchesKey(data, "escape")) {
+							chatState.active = false;
+							chatState.draft = "";
+						} else if (matchesKey(data, "enter")) {
+							const text = chatState.draft.trim();
+							chatState.active = false;
+							chatState.draft = "";
+							if (text) activeSession.sendChat(text);
+						} else if (matchesKey(data, "backspace")) {
+							chatState.draft = chatState.draft.slice(0, -1);
+						} else if (!data.startsWith("\x1B") && data.length > 0 && chatState.draft.length < 240) {
+							chatState.draft += data;
+						}
+						tui.requestRender();
+						return;
+					}
+
+					if (matchesKey(data, "escape")) {
+						stop();
+						unsubscribe();
+						refreshWidget(ctx);
+						done();
+						return;
+					}
+
+					if (matchesKey(data, "/")) {
+						chatState.active = true;
+						tui.requestRender();
+						return;
+					}
+
+					const legal = activeSession.legalActionsForMe();
+					const mySeatIndex = activeSession.info.mySeatIndex;
+
+					if (mySeatIndex !== null && activeSession.getState().street === "showdown" && activeSession.getState().toActIndex === null) {
+						if (matchesKey(data, "enter") && activeSession.canStartHand()) {
+							activeSession.startHand();
+						}
+						return;
+					}
+
+					if (raiseState.active) {
+						if (matchesKey(data, "enter")) {
+							submitAction({ type: "raise", amount: raiseState.amount });
+							raiseState.active = false;
+							tui.requestRender();
+						} else if (matchesKey(data, "+") || matchesKey(data, "=")) {
+							const step = activeSession.getState().bigBlind || 20;
+							raiseState.amount = Math.min(raiseState.amount + step, legal?.maxRaiseTo ?? raiseState.amount);
+							tui.requestRender();
+						} else if (matchesKey(data, "-")) {
+							const step = activeSession.getState().bigBlind || 20;
+							raiseState.amount = Math.max(raiseState.amount - step, legal?.minRaiseTo ?? raiseState.amount);
+							tui.requestRender();
+						} else if (matchesKey(data, "escape")) {
+							raiseState.active = false;
+							tui.requestRender();
+						}
+						return;
+					}
+
+					if (!legal || !legal.canFold) return;
+
+					if (matchesKey(data, "f")) submitAction({ type: "fold" });
+					else if (matchesKey(data, "c")) submitAction(legal.canCheck ? { type: "check" } : { type: "call" });
+					else if (matchesKey(data, "a")) submitAction({ type: "allin" });
+					else if (matchesKey(data, "r") && legal.canBetOrRaise) {
+						raiseState.active = true;
+						raiseState.amount = legal.minRaiseTo;
+						tui.requestRender();
+					}
+				},
+			} satisfies Component;
+		});
+	};
+
+	pi.registerCommand("poker", {
+		description: "Texas Hold'em: local | create | join <room-url> | leave | help",
+		handler: async (rawArgs, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/poker needs the interactive terminal UI", "warning");
+				return;
+			}
+			const command = parsePokerCommand(rawArgs);
+			const hostname = os.hostname();
+			const myId = `${hostname}-${crypto.randomBytes(3).toString("hex")}`;
+
+			if (command.kind === "open") {
+				await openTable(ctx);
+				return;
+			}
+
+			if (command.kind === "local") {
+				closeSession(ctx);
+				session = createBotsSession({
+					myId,
+					displayName: hostname,
+					seatCount: command.seatCount,
+					smallBlind: DEFAULT_SMALL_BLIND,
+					bigBlind: DEFAULT_BIG_BLIND,
+					startingStack: DEFAULT_STARTING_STACK,
+				});
+				if (command.legacyAlias) ctx.ui.notify("/poker bots still works; /poker local is the clearer name.", "info");
+				refreshWidget(ctx);
+				await openTable(ctx);
+				return;
+			}
+
+			if (command.kind === "create") {
+				const rawEndpoint = process.env.PI_POKER_WORKER_URL;
+				if (!rawEndpoint) {
+					ctx.ui.notify(
+						"Personal Worker is not configured. Deploy packages/pi-texas-holdem/cloudflare to your Cloudflare account, then set PI_POKER_WORKER_URL=https://<your-worker>.workers.dev before starting pi. If your Worker protects POST /rooms, also set PI_POKER_CREATE_SECRET. Secrets are sent only in the Authorization header and are never shown by /poker.",
+						"warning",
+					);
+					return;
+				}
+				let endpoint: string;
+				try {
+					endpoint = normalizeWorkerEndpoint(rawEndpoint);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					return;
+				}
+				ctx.ui.notify(`Creating a private room on ${new URL(endpoint).host}…`, "info");
+				try {
+					const created = await createPersonalRoom({
+						endpoint,
+						creationSecret: process.env.PI_POKER_CREATE_SECRET,
+					});
+					const creatorUrl = normalizeRoomUrl(created.creatorUrl);
+					closeSession(ctx);
+					session = createJoinSession({ url: creatorUrl, myId, displayName: hostname, canStartHands: true }, (kind, message) => {
+						if (kind === "welcome") {
+							ctx.ui.notify(`Private room created. Share only this invite URL: ${created.shareUrl}`, "info");
+						} else if (kind === "error") {
+							ctx.ui.notify(`Room error: ${message ?? "request rejected"}`, "warning");
+						} else if (kind === "rejected") {
+							ctx.ui.notify(`Room was created, but joining it failed: ${message ?? "unknown error"}. Invite URL: ${created.shareUrl}`, "error");
+							closeSession(ctx);
+						} else if (kind === "hostDisconnected") {
+							ctx.ui.notify("Personal room went offline. Room closed.", "warning");
+							closeSession(ctx);
+						}
+					});
+					refreshWidget(ctx);
+					await openTable(ctx);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+				return;
+			}
+
+			if (command.kind === "lanHost") {
+				if (!command.confirmed) {
+					ctx.ui.notify(
+						"LAN host mode is friends-only: the host can technically see every hand. Do not use it for money. Re-run with `/poker lan-host [port] --i-know` to confirm. (`/poker host` remains an alias.)",
+						"warning",
+					);
+					return;
+				}
+				closeSession(ctx);
+				session = createHostSession(
+					{
+						myId,
+						displayName: hostname,
+						seatCount: 6,
+						smallBlind: DEFAULT_SMALL_BLIND,
+						bigBlind: DEFAULT_BIG_BLIND,
+						startingStack: DEFAULT_STARTING_STACK,
+						port: command.port,
+						onLog: (line) => ctx.ui.notify(line, "info"),
+					},
+					(boundPort) => ctx.ui.notify(`LAN room ready on port ${boundPort}. Share ws://<your-ip>:${boundPort} only with people you trust.`, "info"),
+				);
+				if (command.legacyAlias) ctx.ui.notify("/poker host still works; /poker lan-host makes its LAN-only behavior explicit.", "info");
+				refreshWidget(ctx);
+				await openTable(ctx);
+				return;
+			}
+
+			if (command.kind === "join") {
+				if (!command.address) {
+					ctx.ui.notify("Usage: /poker join <room-url>  (for example wss://room.example or 192.168.1.20:4551)", "warning");
+					return;
+				}
+				let url: string;
+				try {
+					url = normalizeRoomUrl(command.address);
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					return;
+				}
+				const hasCreatorCapability = new URL(url).searchParams.has("creator");
+				closeSession(ctx);
+				ctx.ui.notify(`Joining ${shareableRoomUrl(url)}. The room operator runs the game and can technically see every hand; only join URLs you trust.`, "info");
+				session = createJoinSession({ url, myId, displayName: hostname, canStartHands: hasCreatorCapability }, (kind, message) => {
+					if (kind === "error") {
+						ctx.ui.notify(`Room error: ${message ?? "request rejected"}`, "warning");
+					} else if (kind === "rejected") {
+						ctx.ui.notify(`Could not join: ${message ?? "unknown error"}`, "error");
+						closeSession(ctx);
+					} else if (kind === "hostDisconnected") {
+						ctx.ui.notify("Room went offline — this hand ended and any bets are returned. Room closed.", "warning");
+						closeSession(ctx);
+					}
+				});
+				refreshWidget(ctx);
+				await openTable(ctx);
+				return;
+			}
+
+			if (command.kind === "rooms") {
+				ctx.ui.notify("Public room discovery is coming later; there is no directory backend yet. No network request was made. Use a room URL from someone you trust with /poker join <room-url>.", "info");
+				return;
+			}
+
+			if (command.kind === "privacy") {
+				ctx.ui.notify("Telemetry is off. This extension does not send usage or gameplay analytics. Any future telemetry will require explicit opt-in and an obvious way to turn it off.", "info");
+				return;
+			}
+
+			if (command.kind === "leave") {
+				closeSession(ctx);
+				ctx.ui.notify("Left the poker table", "info");
+				return;
+			}
+
+			if (command.kind === "invalid") ctx.ui.notify(`Unknown poker command: ${command.input}`, "warning");
+			ctx.ui.notify("/poker local [seats] | create | join <room-url> | lan-host [port] --i-know | rooms | privacy | leave", "info");
+		},
+	});
+
+	pi.on("session_shutdown", () => {
+		session?.close();
+		session = null;
+	});
+}
