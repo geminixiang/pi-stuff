@@ -82,6 +82,8 @@ export default function supervisor(pi: ExtensionAPI): void {
   const livePorts = new Map<string, number[]>();
   /** Per-stream byte offset already shown to the agent, so a plain read returns only new output. */
   const readCursors = new Map<string, StreamCursors>();
+  /** Explicit stop already returns the terminal record from the tool call; suppress its duplicate follow-up turn. */
+  const suppressedTerminalNotifications = new Set<string>();
 
   const refreshStatus = (): void => {
     if (!ui) return;
@@ -208,15 +210,18 @@ export default function supervisor(pi: ExtensionAPI): void {
           cursor = event.sequence;
           const name = ownedTasks.get(event.taskId);
           if (name && (event.type === "ready" || event.type === "terminal")) {
+            const suppressed = event.type === "terminal" && suppressedTerminalNotifications.delete(event.taskId);
             if (event.type === "terminal") {
               liveTasks.delete(event.taskId);
               livePorts.delete(event.taskId);
               refreshStatus();
             }
-            pi.sendUserMessage(
-              `Supervisor process "${name}" (${event.taskId}) ${event.type}: ${JSON.stringify(event.data)}`,
-              { deliverAs: "followUp" },
-            );
+            if (!suppressed) {
+              pi.sendUserMessage(
+                `Supervisor process "${name}" (${event.taskId}) ${event.type}: ${JSON.stringify(event.data)}`,
+                { deliverAs: "followUp" },
+              );
+            }
           }
         }
         if (cursor) {
@@ -389,16 +394,22 @@ export default function supervisor(pi: ExtensionAPI): void {
     }),
     async execute(_id, params, signal) {
       const record = await requireOwned(params.supervisorId);
-      if (params.action === "get") return text(record);
-      return text(
-        await client.request(
-          {
-            method: "stop",
-            params: { taskId: params.supervisorId, timeoutMs: params.timeoutMs },
-          },
-          signal,
-        ),
-      );
+      if (params.action === "get" || TERMINAL_STATES.has(record.state)) return text(record);
+      suppressedTerminalNotifications.add(params.supervisorId);
+      try {
+        return text(
+          await client.request(
+            {
+              method: "stop",
+              params: { taskId: params.supervisorId, timeoutMs: params.timeoutMs },
+            },
+            signal,
+          ),
+        );
+      } catch (error) {
+        suppressedTerminalNotifications.delete(params.supervisorId);
+        throw error;
+      }
     },
   });
 }
