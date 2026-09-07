@@ -1,6 +1,6 @@
 ---
 name: native-web-search
-description: "Search the web through the provider and model active in the current Pi session. Use for quick internet research that needs concise findings and full source URLs."
+description: Use for quick web searches through the active Pi provider.
 license: Apache-2.0
 metadata:
   author: Armin Ronacher (mitsuhiko)

@@ -1,6 +1,6 @@
 ---
 name: release
-description: "Prepare and publish an npm workspace release from the pi-stuff monorepo. Use when releasing a supported package: choose and bump a version, update its changelog, validate the repository, commit and push the bump, and create the package-scoped GitHub release that triggers npm trusted publishing."
+description: Use to release an npm workspace package from pi-stuff.
 ---
 
 # pi-stuff Release

@@ -1,6 +1,6 @@
 ---
 name: taiwan-patent
-description: Look up Taiwan TIPO patents by certificate number, application number, applicant, inventor, agent, IPC, dates, or name. Use when the user asks about 專利, 證書號, 新型/發明/設計專利, TIPO, I/M/D numbers, fees, annuity status, or the specification.
+description: Use to look up Taiwan TIPO patents, specifications, fees, or annuity status.
 ---
 
 # Taiwan patent
