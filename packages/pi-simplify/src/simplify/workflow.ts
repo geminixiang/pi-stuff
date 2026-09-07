@@ -8,6 +8,7 @@ import {
 import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
+import { assertRepositoryRelativePaths } from "../repository-path.js";
 import { SIMPLIFY_PROMPT } from "./prompt.js";
 import { showCandidateSelector } from "./selector.js";
 import type { SimplifyResult } from "./types.js";
@@ -124,9 +125,8 @@ function registerSimplifyCandidatesTool(
         category: categorySchema,
         risk: riskSchema,
         file: Type.String({
-          description: "Repository-relative path",
+          description: "Repository-relative path without '..' segments",
           minLength: 1,
-          pattern: "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
         }),
         lines: Type.String({ description: "Line number or range, or empty string if unknown" }),
         rootIssue: Type.String({
@@ -162,6 +162,8 @@ function registerSimplifyCandidatesTool(
       parameters,
       async execute(_toolCallId, params) {
         const candidates: SimplifyResult[] = params.candidates;
+        assertRepositoryRelativePaths(candidates.map((candidate) => candidate.file));
+
         const resolve = state.getResolver();
         if (!resolve) {
           return {

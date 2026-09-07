@@ -9,6 +9,7 @@ import {
 import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
+import { assertRepositoryRelativePaths } from "../repository-path.js";
 import { runProgrammaticChecks } from "./checks.js";
 import { CODE_SMELL_PROMPT } from "./prompt.js";
 import { showFindingSelector } from "./selector.js";
@@ -164,7 +165,10 @@ function registerFindingsTool(
             category: categorySchema,
             severity: severitySchema,
             confidence: confidenceSchema,
-            file: Type.String({ minLength: 1, pattern: "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" }),
+            file: Type.String({
+              description: "Repository-relative path without '..' segments",
+              minLength: 1,
+            }),
             lines: Type.String(),
             smell: Type.String({ minLength: 1 }),
             evidence: Type.String({ minLength: 1 }),
@@ -176,6 +180,8 @@ function registerFindingsTool(
       }),
       async execute(_toolCallId, params) {
         const findings: CodeSmellFinding[] = params.findings;
+        assertRepositoryRelativePaths(findings.map((finding) => finding.file));
+
         const resolve = state.getResolver();
         if (!resolve) {
           return {

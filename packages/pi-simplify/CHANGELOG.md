@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-07
+
+### Fixed
+
+- Move repository-relative path validation from tool-schema regex lookaheads to runtime checks for better provider compatibility in `/simplify` and `/code-smell`.
+- Reject absolute paths and parent-directory traversal using either forward slashes or backslashes.
+
 ## [0.1.2] - 2026-07-26
 
 ### Changed
