@@ -210,7 +210,8 @@ export default function supervisor(pi: ExtensionAPI): void {
           cursor = event.sequence;
           const name = ownedTasks.get(event.taskId);
           if (name && (event.type === "ready" || event.type === "terminal")) {
-            const suppressed = event.type === "terminal" && suppressedTerminalNotifications.delete(event.taskId);
+            const suppressed =
+              event.type === "terminal" && suppressedTerminalNotifications.delete(event.taskId);
             if (event.type === "terminal") {
               liveTasks.delete(event.taskId);
               livePorts.delete(event.taskId);
