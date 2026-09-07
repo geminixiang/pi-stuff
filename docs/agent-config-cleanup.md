@@ -2,7 +2,7 @@
 
 ## Applied
 
-- `AGENTS.override.md` replaces the Prime-generated root guidance in Pi. It scopes Prime rules to environment work and leaves context gathering and verification proportional to the task. The managed files remain untouched.
+- `AGENTS.md` is now a single, locally maintained guide for the extension monorepo. Prime Lab is no longer used here; removed its root instructions and the temporary `AGENTS.override.md`. Context gathering and verification remain proportional to the task.
 - `~/.pi/agent/settings.json`: default model changed from `macmini/gpt-5.6-sol` to `macmini/gpt-6-astra`, already present in the enabled model list.
 - Five definitions in `~/.pi/agent/agents/` no longer pin an old model, thinking level, or turn count. They use the configured subagent default (`macmini/gpt-6-astra`). Removed mikan-specific global conventions, mandatory full-file reading, fixed check sequences, and verbose report templates. Kept role boundaries, evidence requirements, and protection of unrelated changes.
 - Shortened 24 skill descriptions to usage conditions. References, scripts, licensing, and metadata remain intact and load on demand.
@@ -10,13 +10,13 @@
 
 ## Scope and persistence
 
-Repository changes: `AGENTS.override.md`, `.pi/skills/release/SKILL.md`, `packages/pi-agent-team/skills/pi-agent-team/SKILL.md`, `packages/pi-native-web-search/skills/native-web-search/SKILL.md`, and `skills/taiwan-patent/SKILL.md`.
+Repository changes: `AGENTS.md`, `.pi/skills/release/SKILL.md`, `packages/pi-agent-team/skills/pi-agent-team/SKILL.md`, `packages/pi-native-web-search/skills/native-web-search/SKILL.md`, and `skills/taiwan-patent/SKILL.md`.
 
 The other 20 skill edits are machine-local, under `~/.agents/skills/` or `~/.pi/agent/skills/`. Skill installation/regeneration may overwrite those edits. Symlinks were followed to their existing source files; no duplicate skill copies were introduced.
 
 ## Retained / not changed
 
-- Prime-managed root and environment AGENTS files and five Prime skills.
+- Legacy Prime environment guidance, skills, and data remain on disk; this cleanup does not remove environment assets.
 - External Git package caches and installed Pi/tool implementation prompts.
 - `ego-browser/SKILL.md`: the attempted description edit failed with `EPERM`; no permission bypass attempted.
 - Model credentials, providers, thinking defaults, enabled tools, and existing user files.
@@ -26,7 +26,7 @@ The other 20 skill edits are machine-local, under `~/.agents/skills/` or `~/.pi/
 - Checked the 24 edited skill frontmatters for names and concise, nonempty descriptions.
 - Checked all five agent definitions for frontmatter and removal of model/thinking/turn pins.
 - Parsed both model settings and confirmed the main default is enabled.
-- Confirmed the installed Pi context loader prioritizes `AGENTS.override.md`.
+- Confirmed the root uses `AGENTS.md` without an override file.
 - Reviewed the repository diff and ran `git diff --check`.
 - No application test suite was run: changes are configuration and Markdown only.
 
