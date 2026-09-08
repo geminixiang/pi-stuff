@@ -1,4 +1,5 @@
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { execFile } from "node:child_process";
+import { execa, type Subprocess } from "execa";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
@@ -50,7 +51,7 @@ async function processIdentity(pid: number): Promise<string | undefined> {
 
 export class TaskRunner {
   readonly store: DurableStore;
-  private readonly children = new Map<string, ChildProcess>();
+  private readonly children = new Map<string, Subprocess>();
   private readonly forcedFailure = new Map<string, { error: string; reason: string }>();
   private readonly portCache = new Map<string, { at: number; ports: number[] }>();
   constructor(store: DurableStore) {
@@ -85,11 +86,12 @@ export class TaskRunner {
         });
         continue;
       }
-      this.signal(record.pid!, "SIGTERM");
+      this.signalRecoveredGroup(record.pid!, "SIGTERM");
       const deadline = Date.now() + 2_000;
       while (Date.now() < deadline && (await processIdentity(record.pid!)) === identity)
         await delay(25);
-      if ((await processIdentity(record.pid!)) === identity) this.signal(record.pid!, "SIGKILL");
+      if ((await processIdentity(record.pid!)) === identity)
+        this.signalRecoveredGroup(record.pid!, "SIGKILL");
       record.error = "taskd restarted while task was active; verified process group stopped";
       await this.transition(record, "failed", "terminal", { reason: "daemon_restart_interrupted" });
     }
@@ -114,31 +116,39 @@ export class TaskRunner {
     const stderr = new LogWriter(join(this.store.dir, `${record.id}.stderr`));
     await stdout.open();
     await stderr.open();
-    let child: ChildProcess;
+    let child: Subprocess | undefined;
     try {
-      child = spawn(spec.command, spec.args ?? [], {
+      child = execa(spec.command, spec.args ?? [], {
         cwd: spec.cwd,
         env: process.env,
         shell: false,
-        detached: process.platform !== "win32",
-        stdio: ["ignore", "pipe", "pipe"],
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        buffer: false,
+        encoding: "buffer",
+        reject: false,
+        killDescendants: true,
+        // stop() owns its per-call grace period, including the final log flush wait.
+        forceKillAfterDelay: false,
+        // taskd owns shutdown and identity-checked crash recovery, not an exit hook.
+        cleanup: false,
       });
+      // Execa resolves after exit and stdio completion, including nonzero/spawn failures.
+      // Keep the bounded exit-to-flush wait below for descendants holding a pipe open.
+      const flushed = child
+        .then(() => Promise.all([stdout.close(), stderr.close()]))
+        .then(() => undefined)
+        .catch(() => undefined);
       child.stdout!.on("data", (chunk: Buffer) => stdout.write(chunk));
       child.stderr!.on("data", (chunk: Buffer) => stderr.write(chunk));
       if (!child.pid) throw new Error("Process did not provide a pid");
       record.pid = child.pid;
       this.children.set(record.id, child);
       const started = (async () => {
-        record.processIdentity = await processIdentity(child.pid!);
-        await this.transition(record, "running", "state", { pid: child.pid });
+        record.processIdentity = await processIdentity(record.pid!);
+        await this.transition(record, "running", "state", { pid: record.pid });
       })();
-      // "close" follows "exit" once both stdio pipes have ended, so draining from there is
-      // what makes the log on disk complete. A reader that sees a terminal state must not
-      // race the tail of the output, so the terminal transition below awaits this.
-      const flushed = new Promise<void>((resolve) => child.once("close", () => resolve()))
-        .then(() => Promise.all([stdout.close(), stderr.close()]))
-        .then(() => undefined)
-        .catch(() => undefined);
       // A store write can fail here (a full or unwritable runtime directory), and this chain
       // has no caller to reject to. Record it on the task rather than letting an unhandled
       // rejection take down the daemon and every other task it supervises.
@@ -149,13 +159,13 @@ export class TaskRunner {
           .catch((error: unknown) => {
             record.error = `Failed to record task completion: ${error instanceof Error ? error.message : String(error)}`;
           });
-      child.once("error", (error) => {
+      child.nodeChildProcess.once("error", (error) => {
         settle(() => {
           record.error = error.message;
           return this.finish(record, "failed", null, null);
         });
       });
-      child.once("exit", (code, signal) => {
+      child.nodeChildProcess.once("exit", (code, signal) => {
         settle(() => {
           const forced = this.forcedFailure.get(record.id);
           if (forced) {
@@ -173,6 +183,9 @@ export class TaskRunner {
       });
       await started;
     } catch (error) {
+      // A startup/persistence failure must not leave an untracked live process group.
+      child?.kill("SIGKILL");
+      this.children.delete(record.id);
       await stdout.close().catch(() => undefined);
       await stderr.close().catch(() => undefined);
       record.error = String(error);
@@ -227,14 +240,15 @@ export class TaskRunner {
     const record = this.store.get(id);
     if (!record) throw new Error("Task not found");
     if (TERMINAL_STATES.has(record.state)) return record;
-    await this.transition(record, "stopping", "state", {});
+    const failure = this.forcedFailure.get(id);
+    await this.transition(record, "stopping", "state", failure ? { reason: failure.reason } : {});
     const child = this.children.get(id);
     if (!child?.pid) return this.store.get(id)!;
-    this.signal(child.pid, "SIGTERM");
+    child.kill("SIGTERM");
     try {
       return await this.waitTerminal(id, timeoutMs);
     } catch {
-      this.signal(child.pid, "SIGKILL");
+      child.kill("SIGKILL");
       return this.waitTerminal(id, 2_000);
     }
   }
@@ -249,7 +263,8 @@ export class TaskRunner {
     return Promise.all(owned.map((record) => this.stop(record.id, timeoutMs)));
   }
 
-  private signal(pid: number, signal: NodeJS.Signals): void {
+  // Execa cannot reattach a subprocess handle after restart. Call only after identity checks.
+  private signalRecoveredGroup(pid: number, signal: NodeJS.Signals): void {
     try {
       process.kill(process.platform === "win32" ? pid : -pid, signal);
     } catch (error) {
@@ -351,10 +366,7 @@ export class TaskRunner {
         error: "Readiness timed out",
         reason: "readiness_timed_out",
       });
-      record.state = current.state;
-      await this.transition(record, "stopping", "state", { reason: "readiness_timed_out" });
-      const child = this.children.get(record.id);
-      if (child?.pid) this.signal(child.pid, "SIGTERM");
+      await this.stop(record.id);
     }
   }
 }

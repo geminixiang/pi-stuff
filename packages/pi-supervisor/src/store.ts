@@ -64,7 +64,6 @@ export class DurableStore {
     }
     this.data.sequence = Math.max(this.data.sequence, previous);
     await this.persist();
-    this.committed = clone(this.data);
     await this.secureFile(this.snapshotPath);
     try {
       await this.secureFile(this.eventsPath);
@@ -119,6 +118,8 @@ export class DurableStore {
   }
 
   async events(after: number, limit = 100): Promise<TaskEvent[]> {
+    // The daemon is the only spool writer. Caught-up polls need no disk read or JSON parsing.
+    if (after >= this.committed.sequence) return [];
     return (await this.readEvents())
       .filter((event) => event.sequence > after)
       .slice(0, Math.max(1, Math.min(limit, 1000)));
@@ -126,12 +127,15 @@ export class DurableStore {
 
   ack(name: string, sequence: number): Promise<void> {
     return this.serialized(async () => {
+      const acknowledged = this.cursor(name);
       if (
         !Number.isSafeInteger(sequence) ||
-        sequence < (this.data.cursors[name] ?? 0) ||
+        sequence < acknowledged ||
         sequence > this.data.sequence
       )
         throw new Error("Invalid event acknowledgement");
+      // Check inside the queue, and against durable state so a failed write can be retried.
+      if (sequence === acknowledged) return;
       this.data.cursors[name] = sequence;
       await this.persist();
     });
@@ -140,9 +144,7 @@ export class DurableStore {
   private serialized<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.mutation.then(operation, operation);
     this.mutation = result.then(
-      () => {
-        this.committed = clone(this.data);
-      },
+      () => undefined,
       () => undefined,
     );
     return result;
@@ -204,6 +206,8 @@ export class DurableStore {
     });
     await chmod(temp, 0o600);
     await rename(temp, this.snapshotPath);
+    // Publish only successful writes; serialized no-ops must not copy the entire history.
+    this.committed = clone(this.data);
   }
 
   private async secureDirectory(): Promise<void> {

@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableStore } from "../src/store.ts";
@@ -35,6 +44,124 @@ test("serializes mutations, spools unique sequences, and persists acknowledgemen
     await assert.rejects(reopened.ack("consumer", 0), /Invalid event acknowledgement/);
     assert.equal((await lstat(dir)).mode & 0o777, 0o700);
     assert.equal((await lstat(reopened.snapshotPath)).mode & 0o777, 0o600);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("duplicate acknowledgements neither rewrite nor clone the snapshot", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "task-store-"));
+  try {
+    const store = new DurableStore(dir);
+    await store.open();
+    await store.create(record("historical-task"));
+    await store.ack("consumer", 1);
+    const before = await lstat(store.snapshotPath, { bigint: true });
+    const snapshot = await readFile(store.snapshotPath, "utf8");
+    const clone = t.mock.method(globalThis, "structuredClone");
+    await Promise.all(Array.from({ length: 30 }, () => store.ack("consumer", 1)));
+    await store.ack("new-consumer", 0);
+    assert.equal(clone.mock.callCount(), 0);
+    const after = await lstat(store.snapshotPath, { bigint: true });
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mtimeNs, before.mtimeNs);
+    assert.equal(after.ctimeNs, before.ctimeNs);
+    assert.equal(await readFile(store.snapshotPath, "utf8"), snapshot);
+    assert.equal(store.cursor("consumer"), 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("acknowledgement validation stays serialized, rejects invalid cursors, and recovers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "task-store-"));
+  try {
+    const store = new DurableStore(dir);
+    await store.open();
+    await store.emit("x", "created", {});
+    await store.ack("consumer", 1);
+    // The emit must finish before ack(2) validates, and the formerly duplicate ack(1)
+    // must validate after ack(2) rather than bypassing the queue.
+    const results = await Promise.allSettled([
+      store.emit("x", "state", {}),
+      store.ack("consumer", 2),
+      store.ack("consumer", 1),
+    ]);
+    assert.deepEqual(
+      results.map((result) => result.status),
+      ["fulfilled", "fulfilled", "rejected"],
+    );
+    assert.equal(store.cursor("consumer"), 2);
+    for (const sequence of [-1, 1, 3, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+      await assert.rejects(store.ack("consumer", sequence), /Invalid event acknowledgement/);
+    await store.ack("consumer", 2);
+    await store.emit("x", "state", {});
+    await store.ack("consumer", 3);
+    const reopened = new DurableStore(dir);
+    await reopened.open();
+    assert.equal(reopened.cursor("consumer"), 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("failed acknowledgements remain retryable and no-ops do not publish uncommitted state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "task-store-"));
+  try {
+    const store = new DurableStore(dir);
+    await store.open();
+    await store.emit("x", "created", {});
+    const backup = join(dir, "snapshot.backup");
+    await rename(store.snapshotPath, backup);
+    await mkdir(store.snapshotPath);
+    await assert.rejects(store.ack("consumer", 1));
+    assert.equal(store.cursor("consumer"), 0);
+    // This must not publish the cursor left in working state by the failed write.
+    await store.ack("other-consumer", 0);
+    assert.equal(store.cursor("consumer"), 0);
+    await rm(store.snapshotPath, { recursive: true });
+    await rename(backup, store.snapshotPath);
+    await store.ack("consumer", 1);
+    assert.equal(store.cursor("consumer"), 1);
+    const reopened = new DurableStore(dir);
+    await reopened.open();
+    assert.equal(reopened.cursor("consumer"), 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("caught-up event polls skip spool reads and still observe later events", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "task-store-"));
+  try {
+    const store = new DurableStore(dir);
+    await store.open();
+    await store.emit("x", "created", {});
+    const backup = join(dir, "events.backup");
+    await rename(store.eventsPath, backup);
+    // A directory makes any attempted read fail rather than silently returning no events.
+    await mkdir(store.eventsPath);
+    assert.deepEqual(await store.events(1), []);
+    assert.deepEqual(await store.events(2), []);
+    await assert.rejects(store.events(0));
+    await rm(store.eventsPath, { recursive: true });
+    await rename(backup, store.eventsPath);
+    await store.emit("x", "state", {});
+    assert.deepEqual(
+      (await store.events(1)).map((event) => event.sequence),
+      [2],
+    );
+    const reopened = new DurableStore(dir);
+    await reopened.open();
+    assert.deepEqual(
+      (await reopened.events(0, 1)).map((event) => event.sequence),
+      [1],
+    );
+    assert.deepEqual(
+      (await reopened.events(1)).map((event) => event.sequence),
+      [2],
+    );
+    assert.deepEqual(await reopened.events(2), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

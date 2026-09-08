@@ -72,6 +72,7 @@ async function daemonSourceMtime(): Promise<number> {
 export default function supervisor(pi: ExtensionAPI): void {
   let polling = false;
   let cursor = 0;
+  let acknowledgedCursor = 0;
   let sessionId: string | undefined;
   let cursorName = "pi-supervisor-unbound";
   let ui: ExtensionUIContext | undefined;
@@ -225,11 +226,13 @@ export default function supervisor(pi: ExtensionAPI): void {
             }
           }
         }
-        if (cursor) {
+        if (cursor > acknowledgedCursor) {
           await client.request({
             method: "ack",
             params: { cursor: cursorName, sequence: cursor },
           });
+          // Advance only after success so a failed acknowledgement is retried on an empty poll.
+          acknowledgedCursor = cursor;
         }
       } catch {}
       await new Promise((resolve) => setTimeout(resolve, 500));
