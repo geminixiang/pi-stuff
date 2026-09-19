@@ -105,7 +105,7 @@ test("resolveModel: picks the first configured provider in preference order", as
   models.setProvider(fakeProvider("typesafe", false));
   models.setProvider(fakeProvider("openrouter", true));
   models.setProvider(fakeProvider("vercel", true));
-  const model = await resolveModel(models, undefined);
+  const { model } = await resolveModel(models, undefined);
   assert.equal(model.provider, "openrouter");
 });
 
@@ -113,7 +113,7 @@ test("resolveModel: honors an explicit provider override", async () => {
   const models = createJevModels();
   models.setProvider(fakeProvider("typesafe", true));
   models.setProvider(fakeProvider("vercel", true));
-  const model = await resolveModel(models, "vercel");
+  const { model } = await resolveModel(models, "vercel");
   assert.equal(model.provider, "vercel");
 });
 

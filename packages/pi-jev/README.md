@@ -15,7 +15,24 @@ Workers AI as interchangeable backends.
 pi install npm:@geminixiang/pi-jev
 ```
 
-Set one of these so the tool has a configured backend:
+Requires Pi **0.82.1 or newer** (native provider registration and provider-level auth
+resolution). After installing, restart Pi or `/reload`, then configure a backend with
+Pi's interactive `/login`:
+
+| Jev backend  | Pi login                                                  |
+| ------------ | --------------------------------------------------------- |
+| `typesafe`   | `/login typesafe` (added by this extension)               |
+| `openrouter` | `/login openrouter`                                       |
+| `vercel`     | `/login vercel-ai-gateway`                                |
+| `cloudflare` | `/login cloudflare-workers-ai` (API token and account ID) |
+
+TypeSafe prompts for a **plain API key**, not OAuth. Pi owns credential persistence
+and `/logout typesafe` removes the saved key. The registration has no chat models:
+TypeSafe appears in `/login`, not `/model`; use the `jev` tool to call it. OpenRouter's
+browser login is also usable: it mints an OpenRouter API key billed from your credits.
+No Jev-specific copy of Pi's auth file is needed.
+
+Alternatively, keep using Jev's existing environment variables:
 
 | Env var                                          | Backend                  |
 | ------------------------------------------------ | ------------------------ |
@@ -24,8 +41,28 @@ Set one of these so the tool has a configured backend:
 | `AI_GATEWAY_API_KEY` (or `VERCEL_API_KEY`)       | Vercel AI Gateway        |
 | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Workers AI    |
 
-The tool tries them in that order and uses the first one configured, or pass `provider`
-in a call to force one.
+The tool checks backends in this order: **TypeSafe → OpenRouter → Vercel →
+Cloudflare**. Within each backend, compatible Pi-resolved auth takes precedence;
+otherwise it falls back to that backend's Jev environment configuration. An earlier
+backend's environment key still wins over a later backend's Pi key. Pass `provider`
+in a call to restrict selection to one Jev backend ID from the table above.
+
+Credentials are resolved from the executing tool's `ctx.modelRegistry` on every call,
+so Pi handles saved keys, configured key expressions, and runtime overrides. The active
+chat model does not select the Jev backend, and unrelated subscription credentials
+(such as Codex or Claude) are never reused. Cloudflare reuse is limited to **Workers
+AI**, not Cloudflare **AI Gateway**; the resolved Workers account ID accompanies its
+bearer key. Provider-specific environment values are not copied wholesale.
+
+For safety, Pi credential reuse is limited to the standard service endpoints and a
+resolved API key with no custom headers. Redirected providers, custom auth headers,
+header-only auth, and incomplete Workers account configuration are skipped in favor
+of Jev's environment fallback. Chat base URLs are never passed to the decision API.
+Pi auth-resolution errors stop the call with a sanitized login hint; evaluation
+failures are not retried on another backend. Configure a Jev environment key if your
+Pi proxy configuration is incompatible. `/logout` does not disable environment keys.
+The account/key must also have access to Jev on the selected service; configuration
+alone does not verify permissions or billing.
 
 ## Skill
 

@@ -6,6 +6,7 @@ import {
 } from "@geminixiang/jev";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { resolvePiAuth, typesafeLoginProvider, type JevAuthRegistry } from "./auth.ts";
 
 /** Preference order: cheapest/most direct backends first, ambient fallbacks last. */
 const PROVIDER_ORDER = ["typesafe", "openrouter", "vercel", "cloudflare"] as const;
@@ -87,21 +88,28 @@ export function toJevQuestion(id: string, question: QuestionArg): Question {
 }
 
 /** First provider with a resolvable credential, in `PROVIDER_ORDER`; throws if none. */
-export async function resolveModel(models: JevModels, requested: string | undefined) {
+export async function resolveModel(
+  models: JevModels,
+  requested: string | undefined,
+  registry?: JevAuthRegistry,
+) {
   const order = requested ? [requested] : PROVIDER_ORDER;
   for (const providerId of order) {
     const model = models.getModel(providerId, "jev-latest");
     if (!model) continue;
-    if (await models.getAuth(model)) return model;
+    const options = registry ? await resolvePiAuth(registry, providerId) : undefined;
+    if (options) return { model, options };
+    if (await models.getAuth(model)) return { model, options: undefined };
   }
   const tried = requested ? [requested] : [...PROVIDER_ORDER];
   throw new JevAuthError(
     tried.join(","),
-    `No configured Jev backend among [${tried.join(", ")}]. Set one of: TYPESAFE_API_KEY, OPENROUTER_API_KEY, AI_GATEWAY_API_KEY (or VERCEL_API_KEY), CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.`,
+    `No configured Jev backend among [${tried.join(", ")}]. Use /login typesafe, /login openrouter, /login vercel-ai-gateway, or /login cloudflare-workers-ai in Pi, or set one of: TYPESAFE_API_KEY, OPENROUTER_API_KEY, AI_GATEWAY_API_KEY (or VERCEL_API_KEY), CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.`,
   );
 }
 
 export default function jevExtension(pi: ExtensionAPI) {
+  pi.registerProvider(typesafeLoginProvider());
   const models = createBuiltinJevModels();
 
   pi.registerTool({
@@ -121,13 +129,17 @@ export default function jevExtension(pi: ExtensionAPI) {
     ],
     parameters: jevSchema,
     executionMode: "parallel",
-    async execute(_toolCallId, args, signal) {
+    async execute(_toolCallId, args, signal, _onUpdate, ctx) {
       const questions: Record<string, Question> = {};
       for (const [id, question] of Object.entries(args.questions)) {
         questions[id] = toJevQuestion(id, question);
       }
-      const model = await resolveModel(models, args.provider);
-      const result = await models.evaluate(model, { state: args.state, questions }, { signal });
+      const { model, options } = await resolveModel(models, args.provider, ctx.modelRegistry);
+      const result = await models.evaluate(
+        model,
+        { state: args.state, questions },
+        { ...options, signal },
+      );
 
       return {
         content: [
