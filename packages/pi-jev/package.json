@@ -1,0 +1,62 @@
+{
+  "name": "@geminixiang/pi-jev",
+  "version": "0.1.0",
+  "description": "Ask Jev, TypeSafe's calibrated decision model, typed boolean/choice/score questions from any Pi conversation",
+  "keywords": [
+    "classification",
+    "decision-model",
+    "jev",
+    "pi-extension",
+    "pi-package",
+    "pi-skill",
+    "typesafe"
+  ],
+  "homepage": "https://github.com/geminixiang/pi-stuff/tree/main/packages/pi-jev#readme",
+  "bugs": "https://github.com/geminixiang/pi-stuff/issues",
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-jev"
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@geminixiang/jev": "^0.3.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typebox": "^1.0.52",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}
