@@ -14,6 +14,27 @@ Skip this for trivial, obviously-scoped edits (typo fix, one-line config change)
 task has more than one plausible approach, touches behavior someone depends on, or its correctness
 can't be eyeballed from the diff.
 
+## The gather → reason → prove loop
+
+This is the default way to work through real uncertainty — not a one-shot guess, and not a single
+pass of research-then-code:
+
+1. **Gather** — pull in information broadly and deeply: read the actual code paths, logs,
+   configs, and related history, not just the first file that looks relevant. Comprehensive,
+   deep gathering upfront is what both the reasoning step and the proof step stand on —
+   skimping here is what makes both go wrong later.
+2. **Reason** — form a specific hypothesis from what you gathered. Not "it's probably something
+   with the cache" but a hypothesis precise enough to be provable or disprovable.
+3. **Prove it with a POC** — build the smallest thing that would confirm or kill the hypothesis:
+   a repro script, a one-off log line, a scratch test, a minimal patch. Run it against the real
+   artifact, not a thought experiment.
+4. **If disproved, loop** — a POC that fails is information, not a setback. Fold it back into
+   step 1 (gather more, now narrower and better-informed) and go again.
+
+Getting it right on the first pass is not the goal and not expected. Budget for **3–5 passes**
+through this loop before landing on a final answer. Stop when the result actually holds up under
+the evidence you gathered — not when you're out of patience and hoping it's right.
+
 ## Principles
 
 **Core**
@@ -38,7 +59,8 @@ can't be eyeballed from the diff.
 
 **Verification**
 - **Prove it works** — verify against the real artifact (a running process, an actual test run,
-  real output) — never against a proxy like "the diff reads correctly."
+  real output) — never against a proxy like "the diff reads correctly." This is the "prove"
+  step of the gather → reason → prove loop above, not a one-time check at the very end.
 - **Fix root causes** — trace symptoms to their actual cause instead of patching where the
   symptom surfaced.
 - **Sequence verifiable units** — break work into steps that can each be checked independently,
@@ -62,8 +84,8 @@ can't be eyeballed from the diff.
 
 | Task shape | Approach |
 | --- | --- |
-| Investigation ("why does X happen") | Reproduce first, then read the actual code path. Don't theorize ahead of evidence. |
-| Bug fix | Reproduce → find the root cause → fix → confirm the repro is now gone. |
+| Investigation ("why does X happen") | Run the gather → reason → prove loop: reproduce first, read the actual code path, form a specific hypothesis, then prove or kill it with a small check before writing it up. |
+| Bug fix | Same loop, aimed at a fix: reproduce → hypothesize the root cause → prove it with a minimal POC → if disproved, gather more and go again → fix → confirm the repro is now gone. |
 | New feature | Model the domain before writing code against it. Exhaust 2–3 approaches when the design has real trade-offs; don't default to the first idea. |
 | Refactor / cleanup | Confirm behavior is unchanged before and after. In this repo, lean on `pi-simplify`'s `/code-smell` and `/simplify` for a structured pass. |
 | Multi-file / cross-cutting change | Sequence into independently verifiable steps rather than one large unreviewed diff. |
