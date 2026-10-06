@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 - 2026-10-06
+
+- Route CLIProxyAPI’s custom Responses API through its registered provider transport instead of the incorrect `/images/generations` fallback.
+- Correct misleading Codex labels in normalized HTTP errors and add an offline custom-provider routing regression test.
+
 ## 0.2.1 - 2026-10-06
 
 - Delegate native Responses requests to Pi’s public model registry, using request-time provider auth/configuration and SSE transport; remove extension-owned native HTTP, JWT, and SSE handling. Normalized `/images/generations` transport is unchanged.

@@ -106,7 +106,7 @@ async function setup(t: TestContext, api = "openai-responses", streams?: Provide
             return {
               auth: {
                 apiKey:
-                  api === "openai-codex-responses"
+                  api === "openai-codex-responses" || api === "cliproxyapi-codex-responses"
                     ? `header.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account" } })).toString("base64")}.signature`
                     : "request-time-key",
                 baseUrl: "https://resolved.invalid/v1",
@@ -237,6 +237,27 @@ for (const api of ["openai-responses", "azure-openai-responses", "openai-codex-r
     ]);
   });
 }
+
+test("CLIProxyAPI custom Responses API uses its registered transport, not image generations", async (t) => {
+  const adapter = openAICodexResponsesApi();
+  let calls = 0;
+  const fixture = await setup(t, "cliproxyapi-codex-responses", {
+    ...adapter,
+    streamSimple(model, context, options) {
+      calls++;
+      return adapter.streamSimple(model, context, options);
+    },
+  });
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://resolved.invalid/v1/codex/responses");
+    assert.deepEqual(body(init).tools, [{ type: "image_generation", output_format: "png" }]);
+    return response(undefined, "\n");
+  };
+  const result = await fixture.execute();
+  assert.equal(calls, 1);
+  assert.equal(result.details.responseId, "response-1");
+  assert.deepEqual(await readFile(result.details.savedPath), Buffer.from(PNG, "base64"));
+});
 
 test("native terminal-only output supports local and recent references without truncating inputs", async (t) => {
   const fixture = await setup(t);

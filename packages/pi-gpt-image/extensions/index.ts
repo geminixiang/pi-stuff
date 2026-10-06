@@ -56,9 +56,12 @@ export function resolveRoutingModel(
 }
 
 export function usesNativeResponses(model: Model<any>): boolean {
-  return ["openai-responses", "azure-openai-responses", "openai-codex-responses"].includes(
-    model.api,
-  );
+  return [
+    "openai-responses",
+    "azure-openai-responses",
+    "openai-codex-responses",
+    "cliproxyapi-codex-responses",
+  ].includes(model.api);
 }
 
 export function resolveImageUrl(model: Model<any>): string {
@@ -435,14 +438,16 @@ async function requestImage(
     }
     const text = await response.text();
     if (attempt === MAX_RETRIES || ![429, 500, 502, 503, 504].includes(response.status)) {
-      throw new Error(`Codex image request failed (${response.status}): ${text.slice(0, 1000)}`);
+      throw new Error(
+        `Image generation request failed (${response.status}): ${text.slice(0, 1000)}`,
+      );
     }
     const delay =
       parseRetryAfter(response.headers.get("retry-after")) ??
       Math.min(1000 * 2 ** attempt, MAX_DELAY_MS);
     await abortableDelay(delay, signal);
   }
-  throw new Error("Codex image request failed after retries.");
+  throw new Error("Image generation request failed after retries.");
 }
 
 function outputDirectory(session: string, agentDir: string): string {
