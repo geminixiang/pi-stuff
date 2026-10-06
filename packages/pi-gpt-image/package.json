@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-gpt-image",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generate and edit images through the active GPT provider's hosted image tool",
   "keywords": [
     "codex",

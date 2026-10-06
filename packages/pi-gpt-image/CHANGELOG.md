@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-10-06
+
+- Maintenance release to verify npm trusted publishing; no functional changes.
+
 ## 0.1.0 - 2026-10-06
 
 - Add the `gpt_image` Pi tool for generating and editing images through the active GPT 5.5+ provider.
