@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Auditable provenance memory for pi",
   "keywords": [
     "pi-package"
