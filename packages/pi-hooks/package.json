@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-hooks",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run project or user commands automatically on Pi agent events, including denying a tool call",
   "license": "MIT",
   "files": [
