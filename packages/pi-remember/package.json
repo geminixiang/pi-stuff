@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-remember",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skill that records durable decisions into AGENTS.md",
   "keywords": [
     "pi-package",
