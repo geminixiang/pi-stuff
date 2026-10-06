@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-task-protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Versioned durable task protocol for Pi supervisors",
   "license": "MIT",
   "files": [
