@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 - 2026-10-06
+
+- Require Pi 1.x (>=1.0.0 <2.0.0); develop and verify against Pi 1.0.4.
+- Omit null provider header overrides when building image requests.
+
 ## 0.1.1 - 2026-10-06
 
 - Maintenance release to verify npm trusted publishing; no functional changes.
