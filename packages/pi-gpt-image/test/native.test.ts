@@ -151,7 +151,7 @@ async function setup(t: TestContext, api = "openai-responses", streams?: Provide
     id: string,
     params: unknown,
     signal: AbortSignal | undefined,
-    update: undefined,
+    update: ((result: any) => void) | undefined,
     ctx: unknown,
   ) => Promise<any>;
   extension(
@@ -173,10 +173,12 @@ async function setup(t: TestContext, api = "openai-responses", streams?: Provide
       ],
     },
   };
+  const updates: any[] = [];
   return {
     dir,
+    updates,
     execute: (params: unknown = { prompt: "draw" }, signal?: AbortSignal) =>
-      execute("call", params, signal, undefined, ctx),
+      execute("call", params, signal, (update) => updates.push(update), ctx),
     authCalls: () => authCalls,
     normalized: () => normalized,
   };
@@ -480,4 +482,141 @@ test("native missing image IDs remain undefined and save with unique UUID filena
   assert.equal(first.details.imageGenerationId, undefined);
   assert.notEqual(first.details.savedPath, second.details.savedPath);
   assert.equal((await readdir(join(fixture.dir, "generated-images", "session"))).length, 2);
+});
+
+test("multiple images are saved and shown before the response finishes; updates are cumulative", async (t) => {
+  const fixture = await setup(t);
+  const second = { ...image, id: "image-2" };
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let firstVisible!: () => void;
+  const visible = new Promise<void>((resolve) => {
+    firstVisible = resolve;
+  });
+  const push = fixture.updates.push.bind(fixture.updates);
+  fixture.updates.push = (...updates: any[]) => {
+    const size = push(...updates);
+    if (updates.some((update) => update.details.completedCount === 1)) firstVisible();
+    return size;
+  };
+  const send = (event: unknown) =>
+    controller.enqueue(Buffer.from(`data: ${JSON.stringify(event)}\n\n`));
+  globalThis.fetch = async (_url, init) => {
+    const payload = body(init);
+    assert.match(payload.instructions, /exactly 2 times/);
+    assert.equal(payload.parallel_tool_calls, true);
+    assert.equal(payload.tools[0].n, undefined);
+    return new Response(
+      new ReadableStream({
+        start(c) {
+          controller = c;
+          send({ type: "response.output_item.done", output_index: 0, item: image });
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  const pending = fixture.execute({ prompt: "draw", count: 2 });
+  await visible;
+  const progress = fixture.updates.at(-1);
+  assert.equal(progress.content.filter((part: any) => part.type === "image").length, 1);
+  assert.deepEqual(await readFile(progress.details.savedPath), Buffer.from(PNG, "base64"));
+  send({ type: "response.output_item.done", output_index: 1, item: second });
+  send({ ...terminal, response: { ...terminal.response, output: [image, second] } });
+  controller.close();
+  const result = await pending;
+  assert.equal(result.isError, false);
+  assert.equal(result.details.completedCount, 2);
+  assert.equal(result.details.savedPaths.length, 2);
+  assert.equal(new Set(result.details.savedPaths).size, 2);
+  assert.equal(result.content.filter((part: any) => part.type === "image").length, 2);
+  assert.deepEqual(
+    fixture.updates.map((update) => update.details.completedCount),
+    [0, 1, 2],
+  );
+});
+
+test("multiple image failure retains completed files and returns an explicit partial error", async (t) => {
+  const fixture = await setup(t);
+  globalThis.fetch = async () =>
+    response([
+      { type: "response.output_item.done", output_index: 0, item: image },
+      {
+        type: "response.failed",
+        response: { id: "response-1", status: "failed", error: { message: "second image failed" } },
+      },
+    ]);
+  const result = await fixture.execute({ prompt: "draw", count: 2 });
+  assert.equal(result.isError, true);
+  assert.equal(result.details.completedCount, 1);
+  assert.match(result.content[0].text, /stopped after 1\/2/);
+  assert.deepEqual(await readFile(result.details.savedPath), Buffer.from(PNG, "base64"));
+});
+
+test("multiple image cancellation retains completed files", async (t) => {
+  const fixture = await setup(t);
+  const abort = new AbortController();
+  const push = fixture.updates.push.bind(fixture.updates);
+  fixture.updates.push = (...updates: any[]) => {
+    const size = push(...updates);
+    if (updates.some((update) => update.details.completedCount === 1)) abort.abort();
+    return size;
+  };
+  globalThis.fetch = async () => response();
+  const result = await fixture.execute({ prompt: "draw", count: 2 }, abort.signal);
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /aborted/i);
+  assert.deepEqual(await readFile(result.details.savedPath), Buffer.from(PNG, "base64"));
+});
+
+test("provider under-delivery is explicit without imposing a count cap or retrying", async (t) => {
+  const fixture = await setup(t);
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return response();
+  };
+  const result = await fixture.execute({ prompt: "draw", count: 33 });
+  assert.equal(calls, 1);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.requestedCount, 33);
+  assert.equal(result.details.completedCount, 1);
+  assert.match(result.content[0].text, /1\/33/);
+});
+
+test("identical no-ID images at distinct output indexes are retained and terminal repeats deduplicated", async (t) => {
+  const fixture = await setup(t);
+  const noId = { ...image, id: undefined };
+  globalThis.fetch = async () =>
+    response([
+      { type: "response.output_item.done", output_index: 0, item: noId },
+      { type: "response.output_item.done", output_index: 1, item: noId },
+      { ...terminal, response: { ...terminal.response, output: [noId, noId] } },
+    ]);
+  const result = await fixture.execute({ prompt: "draw", count: 2 });
+  assert.equal(result.isError, false);
+  assert.equal(result.details.completedCount, 2);
+  assert.equal(new Set(result.details.savedPaths).size, 2);
+});
+
+test("conflicting same-ID multi-output results preserve the first image but report failure", async (t) => {
+  const fixture = await setup(t);
+  globalThis.fetch = async () =>
+    response([
+      { type: "response.output_item.done", output_index: 0, item: image },
+      { type: "response.output_item.done", output_index: 1, item: { ...image, result: "invalid" } },
+    ]);
+  const result = await fixture.execute({ prompt: "draw", count: 2 });
+  assert.equal(result.isError, true);
+  assert.equal(result.details.completedCount, 1);
+  assert.match(result.content[0].text, /conflicting/i);
+  assert.deepEqual(await readFile(result.details.savedPath), Buffer.from(PNG, "base64"));
+});
+
+test("invalid output counts fail before provider requests", async (t) => {
+  const fixture = await setup(t);
+  globalThis.fetch = async () => {
+    throw new Error("must not request");
+  };
+  for (const count of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    await assert.rejects(fixture.execute({ prompt: "draw", count }), /positive safe integer/);
 });

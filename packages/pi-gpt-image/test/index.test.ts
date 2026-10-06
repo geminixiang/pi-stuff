@@ -23,6 +23,25 @@ const PNG = Buffer.from(
 );
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 
+test("multiple-output payloads use hosted calls or normalized n and retain all JSON images", async () => {
+  const params = { prompt: "draw", count: 3 };
+  const native = buildRequestBody(params, "gpt-5.5", "png", "session");
+  assert.match(native.instructions, /exactly 3 times/);
+  assert.equal(native.parallel_tool_calls, true);
+  assert.deepEqual(native.tools, [{ type: "image_generation", output_format: "png" }]);
+  assert.equal(buildImageGenerationsBody(params, "gpt-5.5").n, 3);
+  assert.equal(buildImageGenerationsBody({ prompt: "draw" }, "gpt-5.5").n, undefined);
+  const parsed = await parseImageGenerationJson(
+    new Response(
+      JSON.stringify({
+        data: [{ b64_json: PNG.toString("base64") }, { b64_json: JPEG.toString("base64") }],
+      }),
+    ),
+  );
+  assert.equal(parsed.images?.length, 2);
+  assert.equal(parsed.images?.[1].result, JPEG.toString("base64"));
+});
+
 test("request auth omits null header overrides from Pi 1.x", async () => {
   const headers = await buildRequestHeaders(
     { api: "openai-responses" } as Parameters<typeof buildRequestHeaders>[0],
@@ -118,6 +137,38 @@ function context(cwd: string, messages: unknown[] = []) {
     },
   };
 }
+
+test("normalized multiple-output execution requests n and returns all images with progress", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "gpt-image-normalized-multi-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  globalThis.fetch = async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).n, 2);
+    return new Response(
+      JSON.stringify({
+        data: [{ b64_json: PNG.toString("base64") }, { b64_json: JPEG.toString("base64") }],
+      }),
+    );
+  };
+  const updates: any[] = [];
+  const result = await createTool(dir).execute(
+    "call",
+    { prompt: "draw", count: 2 },
+    undefined,
+    (update: any) => updates.push(update),
+    context(dir),
+  );
+  assert.equal(result.details.completedCount, 2);
+  assert.equal(result.content.filter((part) => part.type === "image").length, 2);
+  assert.deepEqual(
+    updates.map((update) => update.details.completedCount),
+    [0, 1, 2],
+  );
+  assert.equal((result.details.savedPaths as string[]).length, 2);
+});
 
 test("strict decoding validates base64 and requested magic bytes", () => {
   assert.deepEqual(decodeImageData(PNG.toString("base64"), "png"), PNG);

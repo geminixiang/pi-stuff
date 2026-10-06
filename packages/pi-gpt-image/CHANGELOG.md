@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 - 2026-10-06
+
+- Add optional `count` without an extension-imposed fixed output cap; request separate hosted image calls or normalized `n` outputs and retain every returned image.
+- Save multi-output Responses images as they complete and publish cumulative image previews, paths, and `Completed X/N` progress updates.
+- Preserve completed images on later failures/cancellation and explicitly report count mismatches without automatic generation retries.
+- Retain singular result metadata for compatibility and add per-image metadata, saved paths, and requested/completed counts.
+
 ## 0.2.2 - 2026-10-06
 
 - Route CLIProxyAPI’s custom Responses API through its registered provider transport instead of the incorrect `/images/generations` fallback.

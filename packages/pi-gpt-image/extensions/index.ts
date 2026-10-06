@@ -21,6 +21,13 @@ type OutputFormat = (typeof OUTPUT_FORMATS)[number];
 
 const parameters = Type.Object({
   prompt: Type.String({ description: "Detailed image generation or editing instructions." }),
+  count: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      description:
+        "Number of separate output images. Defaults to 1; provider limits apply. Images may be generated sequentially.",
+    }),
+  ),
   outputFormat: Type.Optional(StringEnum(OUTPUT_FORMATS)),
   model: Type.Optional(
     Type.String({
@@ -98,12 +105,14 @@ interface InputImage {
 }
 interface GeneratedImage {
   id?: string;
+  outputIndex?: number;
   status: string;
   result: string;
   revisedPrompt?: string;
 }
 interface ParsedResponse {
   image?: GeneratedImage;
+  images?: GeneratedImage[];
   text: string[];
   responseId?: string;
   usage?: unknown;
@@ -227,6 +236,7 @@ export function buildImageGenerationsBody(
     model,
     prompt: params.prompt,
     response_format: "b64_json",
+    ...(params.count && params.count > 1 ? { n: params.count } : {}),
     output_format: params.outputFormat ?? "png",
   };
 }
@@ -244,7 +254,9 @@ export function buildRequestBody(
     stream: true,
     prompt_cache_key: sessionId,
     instructions:
-      "Call the image_generation tool exactly once to generate or edit the requested bitmap image.",
+      (params.count ?? 1) === 1
+        ? "Call the image_generation tool exactly once to generate or edit the requested bitmap image."
+        : `Call image_generation exactly ${params.count} times to generate or edit ${params.count} separate bitmap images. Each call must produce one image, not a collage. Complete all image calls before responding.`,
     input: [
       {
         role: "user",
@@ -259,7 +271,7 @@ export function buildRequestBody(
     ],
     tools: [{ type: "image_generation", output_format: format }],
     tool_choice: "auto",
-    parallel_tool_calls: false,
+    parallel_tool_calls: (params.count ?? 1) > 1,
     text: { verbosity: "low" },
   };
 }
@@ -270,16 +282,19 @@ export async function parseImageGenerationJson(response: Response): Promise<Pars
     data?: Array<{ b64_json?: unknown; revised_prompt?: unknown }>;
     usage?: unknown;
   };
-  const image = payload.data?.find((item) => typeof item.b64_json === "string");
-  if (!image || typeof image.b64_json !== "string") {
-    throw new Error("The active provider returned no base64 image data.");
-  }
-  return {
-    image: {
+  const images: GeneratedImage[] = (payload.data ?? []).map((item) => {
+    if (typeof item.b64_json !== "string" || !item.b64_json)
+      throw new Error("The active provider returned invalid base64 image data.");
+    return {
       status: "completed",
-      result: image.b64_json,
-      revisedPrompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
-    },
+      result: item.b64_json,
+      revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
+    };
+  });
+  if (!images.length) throw new Error("The active provider returned no base64 image data.");
+  return {
+    image: images[0],
+    images,
     text: [],
     usage: payload.usage,
   };
@@ -290,12 +305,14 @@ async function requestNativeImage(
   model: Model<any>,
   request: ReturnType<typeof buildRequestBody>,
   signal?: AbortSignal,
+  count = 1,
+  onImage?: (image: GeneratedImage) => Promise<void>,
 ): Promise<ParsedResponse> {
-  const parsed: ParsedResponse = { text: [] };
+  const parsed: ParsedResponse = { text: [], images: [] };
   let payloadReplaced = false;
   let sawRawEvent = false;
   let completed = false;
-  function collectImage(value: unknown) {
+  async function collectImage(value: unknown, outputIndex?: number) {
     const item = value as Record<string, unknown> | undefined;
     if (item?.type !== "image_generation_call") return;
     if (item.status !== "completed")
@@ -303,18 +320,33 @@ async function requestNativeImage(
     if (typeof item.result !== "string" || !item.result)
       throw new Error("Image generation result contained no image data.");
     const id = typeof item.id === "string" ? item.id : undefined;
-    if (parsed.image) {
-      if (parsed.image.result === item.result && parsed.image.id === id) return;
+    const previous = parsed.images!.find((image) =>
+      id
+        ? image.id === id
+        : image.id === undefined &&
+          (outputIndex !== undefined
+            ? image.outputIndex === outputIndex
+            : image.result === item.result),
+    );
+    if (previous) {
+      if (previous.result === item.result) return;
+      throw new Error("Received conflicting image generation results for the same image ID.");
+    }
+    if (count === 1 && parsed.images!.length)
       throw new Error(
         "Expected exactly one image generation result; received multiple or conflicting images.",
       );
-    }
-    parsed.image = {
+    const image: GeneratedImage = {
       id,
+      outputIndex,
       status: "completed",
       result: item.result,
       revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
     };
+    decodeImageData(image.result);
+    parsed.images!.push(image);
+    parsed.image ??= image;
+    await onImage?.(image);
   }
   const stream = registry.streamSimple(
     model,
@@ -335,7 +367,7 @@ async function requestNativeImage(
         const routingModel = (payload as { model?: unknown })?.model;
         return { ...request, model: typeof routingModel === "string" ? routingModel : model.id };
       },
-      onProviderStreamEvent(value) {
+      async onProviderStreamEvent(value) {
         if (!value || typeof value !== "object") return;
         const event = value as Record<string, unknown>;
         if (typeof event.type !== "string") return;
@@ -357,9 +389,14 @@ async function requestNativeImage(
               `Image response did not complete (status: ${String(response?.status)}).`,
             );
           completed = true;
-          response.output?.forEach(collectImage);
+          for (const [index, item] of (response.output ?? []).entries())
+            await collectImage(item, index);
         }
-        if (event.type === "response.output_item.done") collectImage(event.item);
+        if (event.type === "response.output_item.done")
+          await collectImage(
+            event.item,
+            typeof event.output_index === "number" ? event.output_index : undefined,
+          );
         if (event.type === "response.output_text.delta" && typeof event.delta === "string")
           parsed.text.push(event.delta);
       },
@@ -464,7 +501,7 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
     name: "gpt_image",
     label: "GPT Image",
     description:
-      "Generate or edit an image through the active GPT 5.5+ provider's hosted image_generation tool, or generate through its normalized /images/generations API. Uses the active provider's endpoint and authentication, including custom providers such as agent-model, and supports up to five local or recent conversation reference images.",
+      "Generate or edit an image through the active GPT 5.5+ provider's hosted image_generation tool, or generate through its normalized /images/generations API. Uses the active provider's endpoint and authentication, including custom providers such as agent-model, supports multiple outputs via count with cumulative completed-image progress, and accepts up to five local or recent conversation reference images.",
     promptSnippet:
       "Generate or edit bitmap images through the active GPT provider's hosted image tool.",
     promptGuidelines: [
@@ -474,6 +511,9 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
     parameters,
     executionMode: "parallel",
     async execute(_toolCallId, params: GptImageParams, signal, onUpdate, ctx) {
+      const count = params.count ?? 1;
+      if (!Number.isSafeInteger(count) || count < 1)
+        throw new Error("count must be a positive safe integer.");
       const requestedModel = resolveRoutingModel(params.model, ctx.model?.id);
       const provider = ctx.model?.provider;
       if (!provider) throw new Error("gpt_image requires an active GPT model.");
@@ -484,6 +524,7 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
       if (!model) {
         throw new Error(`Model ${provider}/${requestedModel} is not configured in Pi.`);
       }
+      const modelId = model.id;
       const format = params.outputFormat ?? "png";
       const nativeResponses = usesNativeResponses(model);
       const endpoint = nativeResponses
@@ -507,68 +548,120 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
           `${provider}/${model.id} exposes image generation through /images/generations, which does not accept reference images. Switch to a Responses provider to edit images.`,
         );
       }
-      onUpdate?.({
-        content: [
-          {
-            type: "text",
-            text: `Requesting ${images.length ? "image edit" : "image generation"} through ${provider}/${model.id}...`,
-          },
-        ],
-        details: { provider, model: model.id, endpoint, format },
-      });
-      const parsed = nativeResponses
-        ? await requestNativeImage(
-            ctx.modelRegistry,
-            model,
-            buildRequestBody(params, model.id, format, session, images),
-            signal,
-          )
-        : await requestImage(
+      const saved: Array<{
+        image: GeneratedImage;
+        savedPath: string;
+        mimeType: string;
+        outputFormat: OutputFormat;
+      }> = [];
+      let parsed: ParsedResponse | undefined;
+      function result(text: string, isError = false) {
+        const first = saved[0];
+        return {
+          isError,
+          content: [
+            { type: "text" as const, text },
+            ...saved.map(({ image, mimeType }) => ({
+              type: "image" as const,
+              data: image.result,
+              mimeType,
+            })),
+          ],
+          details: {
+            provider,
+            model: modelId,
             endpoint,
-            await buildRequestHeaders(model, () => ctx.modelRegistry.getApiKeyAndHeaders(model)),
-            buildImageGenerationsBody(params, model.id),
-            signal,
-          );
-      if (signal?.aborted) throw new Error("Image generation was aborted.");
-      if (!parsed.image) {
-        const text = parsed.text.join("").trim();
-        throw new Error(text ? `Codex returned no image: ${text}` : "Codex returned no image.");
-      }
-      const bytes = decodeImageData(parsed.image.result);
-      const actualMimeType = magicMime(bytes) as string;
-      const actualFormat: OutputFormat =
-        actualMimeType === "image/jpeg" ? "jpeg" : actualMimeType === "image/webp" ? "webp" : "png";
-      const directory = outputDirectory(session, agentDir);
-      const extension = actualFormat === "jpeg" ? "jpg" : actualFormat;
-      const savedPath = join(directory, imageFileName(parsed.image.id, extension));
-      await withFileMutationQueue(savedPath, async () => {
-        await mkdir(directory, { recursive: true });
-        await writeFile(savedPath, bytes);
-      });
-      const mimeType = actualMimeType;
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Generated image via ${provider}/${model.id} using the provider image backend. Saved to ${savedPath}.`,
+            backendImageModel: undefined,
+            requestedCount: count,
+            completedCount: saved.length,
+            outputFormat: first?.outputFormat,
+            requestedOutputFormat: format,
+            savedPath: first?.savedPath,
+            savedPaths: saved.map((item) => item.savedPath),
+            inputImageCount: images.length,
+            responseId: parsed?.responseId,
+            imageGenerationId: first?.image.id,
+            revisedPrompt: first?.image.revisedPrompt,
+            usage: parsed?.usage,
+            generatedImages: saved.map(({ image, savedPath, mimeType, outputFormat }) => ({
+              savedPath,
+              mimeType,
+              outputFormat,
+              imageGenerationId: image.id,
+              revisedPrompt: image.revisedPrompt,
+            })),
           },
-          { type: "image", data: parsed.image.result, mimeType },
-        ],
-        details: {
-          provider,
-          model: model.id,
-          endpoint,
-          backendImageModel: undefined,
-          outputFormat: actualFormat,
-          requestedOutputFormat: format,
-          savedPath,
-          inputImageCount: images.length,
-          responseId: parsed.responseId,
-          imageGenerationId: parsed.image.id,
-          revisedPrompt: parsed.image.revisedPrompt,
-          usage: parsed.usage,
-        },
-      };
+        };
+      }
+      async function saveImage(image: GeneratedImage) {
+        if (signal?.aborted) throw new Error("Image generation was aborted.");
+        const bytes = decodeImageData(image.result);
+        const mimeType = magicMime(bytes) as string;
+        const outputFormat: OutputFormat =
+          mimeType === "image/jpeg" ? "jpeg" : mimeType === "image/webp" ? "webp" : "png";
+        const directory = outputDirectory(session, agentDir);
+        const savedPath = join(
+          directory,
+          `${count > 1 ? `${saved.length + 1}-` : ""}${imageFileName(image.id, outputFormat === "jpeg" ? "jpg" : outputFormat)}`,
+        );
+        await withFileMutationQueue(savedPath, async () => {
+          await mkdir(directory, { recursive: true });
+          await writeFile(savedPath, bytes);
+        });
+        saved.push({ image, savedPath, mimeType, outputFormat });
+        // Updates replace the previous result in Pi, so retain all completed images.
+        onUpdate?.(
+          result(
+            `Completed ${saved.length}/${count} images via ${provider}/${modelId}. Saved to ${savedPath}. Waiting for the provider to finish...`,
+          ),
+        );
+      }
+      onUpdate?.(
+        result(
+          `Requesting ${count} ${images.length ? "image edits" : "images"} through ${provider}/${model.id}. Completed 0/${count}; the provider may generate sequentially...`,
+        ),
+      );
+      try {
+        parsed = nativeResponses
+          ? await requestNativeImage(
+              ctx.modelRegistry,
+              model,
+              buildRequestBody(params, model.id, format, session, images),
+              signal,
+              count,
+              count > 1 ? saveImage : undefined,
+            )
+          : await requestImage(
+              endpoint,
+              await buildRequestHeaders(model, () => ctx.modelRegistry.getApiKeyAndHeaders(model)),
+              buildImageGenerationsBody(params, model.id),
+              signal,
+            );
+        if (signal?.aborted) throw new Error("Image generation was aborted.");
+        if (!parsed.image) {
+          const text = parsed.text.join("").trim();
+          throw new Error(
+            text ? `Provider returned no image: ${text}` : "Provider returned no image.",
+          );
+        }
+        if (!nativeResponses || count === 1)
+          for (const image of parsed.images ?? [parsed.image]) await saveImage(image);
+        if (saved.length !== count)
+          return result(
+            `Provider completed ${saved.length}/${count} requested images. All returned images were saved:\n${saved.map((item) => item.savedPath).join("\n")}. No automatic retry was made.`,
+            true,
+          );
+        return result(
+          `Generated ${saved.length} image${saved.length === 1 ? "" : "s"} via ${provider}/${model.id} using the provider image backend. Saved to ${saved.map((item) => item.savedPath).join(", ")}.`,
+        );
+      } catch (error) {
+        if (!saved.length) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        return result(
+          `Image generation stopped after ${saved.length}/${count} images: ${reason}\nCompleted images remain saved:\n${saved.map((item) => item.savedPath).join("\n")}`,
+          true,
+        );
+      }
     },
   });
 }
