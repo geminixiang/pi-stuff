@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0 - 2026-10-06
+
+- Require Pi 1.x (>=1.0.0 <2.0.0); adapt provider stream types and smoke checks for Pi 1.x.
+
 ## 0.2.1 - 2026-08-19
 
 - Remove unsupported regex lookaround constraints from PackyAPI Responses tool schemas while preserving ordinary patterns.

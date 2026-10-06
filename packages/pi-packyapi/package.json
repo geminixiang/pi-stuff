@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-packyapi",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "PackyAPI provider extension for Pi",
   "keywords": [
     "packyapi",
