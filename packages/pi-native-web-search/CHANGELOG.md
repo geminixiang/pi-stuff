@@ -6,8 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-06
+
 ### Changed
 
+- Require Pi AI 1.x (>=1.0.0 <2.0.0); verify against the repository's Pi 1.0.4 baseline.
 - Prefer the provider and model active in the current Pi session.
 - Resolve custom active providers by their configured ID instead of exposing an internal provider name.
 

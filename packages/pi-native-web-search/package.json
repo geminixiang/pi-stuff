@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-native-web-search",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi skill for native web search through configured OpenAI Codex or Anthropic credentials",
   "keywords": [
     "pi-package",
