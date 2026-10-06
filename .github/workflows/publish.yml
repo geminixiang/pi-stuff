@@ -19,6 +19,12 @@ on:
           - pi-packyapi
           - pi-jev
           - pi-gpt-image
+          - pi-hooks
+          - pi-memory
+          - pi-remember
+          - pi-task-protocol
+          - pi-supervisor
+          - pi-verification
 
 permissions:
   contents: read
@@ -50,7 +56,7 @@ jobs:
           fi
 
           case "$package" in
-            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid|pi-agent-team|pi-native-web-search|pi-packyapi|pi-jev|pi-gpt-image) ;;
+            pi-simplify|pi-cicd-status|pi-diff|pi-mermaid|pi-agent-team|pi-native-web-search|pi-packyapi|pi-jev|pi-gpt-image|pi-hooks|pi-memory|pi-remember|pi-task-protocol|pi-supervisor|pi-verification) ;;
             *) echo "Unsupported package: $package" >&2; exit 1 ;;
           esac
 

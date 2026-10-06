@@ -23,6 +23,14 @@ Release one workspace at a time from `geminixiang/pi-stuff`.
   - `pi-packyapi` → `@geminixiang/pi-packyapi`
   - `pi-jev` → `@geminixiang/pi-jev`
   - `pi-gpt-image` → `@geminixiang/pi-gpt-image`
+  - `pi-hooks` → `@geminixiang/pi-hooks`
+  - `pi-memory` → `@geminixiang/pi-memory`
+  - `pi-remember` → `@geminixiang/pi-remember`
+  - `pi-task-protocol` → `@geminixiang/pi-task-protocol`
+  - `pi-supervisor` → `@geminixiang/pi-supervisor`
+  - `pi-verification` → `@geminixiang/pi-verification`
+
+New npm packages require an owner to bootstrap publication and configure trusted publishing before this workflow can publish them. Report authentication or authorization failures rather than publishing locally.
 - Git tag and GitHub release title: `<package>@<version>`, for example `pi-mermaid@0.1.2`.
 - Publishing is performed by `.github/workflows/publish.yml` after the GitHub release is published. Do not run `npm publish` locally.
 - Versions containing a prerelease suffix such as `-alpha.`, `-beta.`, or `-rc.` are GitHub prereleases and are published with npm tag `beta`.
