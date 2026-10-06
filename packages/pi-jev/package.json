@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-jev",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Ask Jev, TypeSafe's calibrated decision model, typed boolean/choice/score questions from any Pi conversation",
   "keywords": [
     "classification",
