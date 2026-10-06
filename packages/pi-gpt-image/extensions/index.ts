@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { StringEnum, type Model, type ProviderHeaders } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
+  type ExtensionContext,
   getAgentDir,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -11,8 +12,6 @@ import { type Static, Type } from "typebox";
 
 const MINIMUM_GPT_MAJOR = 5;
 const MINIMUM_GPT_MINOR = 5;
-const IMAGE_MODEL = "gpt-image-2";
-const AUTH_CLAIM = "https://api.openai.com/auth";
 const MAX_IMAGES = 5;
 const MAX_RETRIES = 3;
 const MAX_DELAY_MS = 30_000;
@@ -64,14 +63,6 @@ export function usesNativeResponses(model: Model<any>): boolean {
 
 export function resolveImageUrl(model: Model<any>): string {
   const baseUrl = model.baseUrl.replace(/\/+$/, "");
-  if (usesNativeResponses(model)) {
-    if (model.api === "openai-codex-responses") {
-      if (baseUrl.endsWith("/codex/responses")) return baseUrl;
-      if (baseUrl.endsWith("/codex")) return `${baseUrl}/responses`;
-      return `${baseUrl}/codex/responses`;
-    }
-    return baseUrl.endsWith("/responses") ? baseUrl : `${baseUrl}/responses`;
-  }
   return baseUrl.endsWith("/images/generations") ? baseUrl : `${baseUrl}/images/generations`;
 }
 
@@ -80,7 +71,7 @@ function hasHeader(headers: Headers, name: string): boolean {
 }
 
 export async function buildRequestHeaders(
-  model: Model<any>,
+  _model: Model<any>,
   getAuth: () => Promise<
     { ok: true; apiKey?: string; headers?: ProviderHeaders } | { ok: false; error: string }
   >,
@@ -95,13 +86,6 @@ export async function buildRequestHeaders(
   headers.set("accept", "text/event-stream, application/json");
   if (auth.apiKey && !hasHeader(headers, "authorization")) {
     headers.set("authorization", `Bearer ${auth.apiKey}`);
-  }
-  if (model.api === "openai-codex-responses") {
-    headers.set("OpenAI-Beta", "responses=experimental");
-    headers.set("originator", "pi");
-    if (auth.apiKey && !hasHeader(headers, "chatgpt-account-id")) {
-      headers.set("chatgpt-account-id", decodeJwtAccountId(auth.apiKey));
-    }
   }
   return headers;
 }
@@ -298,86 +282,103 @@ export async function parseImageGenerationJson(response: Response): Promise<Pars
   };
 }
 
-function eventData(block: string): string | undefined {
-  const value = block
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n")
-    .trim();
-  return value && value !== "[DONE]" ? value : undefined;
-}
-
-function handleEvent(value: unknown, parsed: ParsedResponse): void {
-  if (!value || typeof value !== "object") return;
-  const event = value as Record<string, unknown>;
-  if (event.type === "error")
-    throw new Error(
-      `Codex error: ${typeof event.message === "string" ? event.message : "unknown error"}`,
-    );
-  if (event.type === "response.failed") {
-    const response = event.response as { error?: { message?: unknown } } | undefined;
-    throw new Error(
-      typeof response?.error?.message === "string"
-        ? response.error.message
-        : "Codex response failed.",
-    );
-  }
-  if (event.type === "response.created" || event.type === "response.completed") {
-    const response = event.response as { id?: unknown; usage?: unknown } | undefined;
-    if (typeof response?.id === "string") parsed.responseId = response.id;
-    if (response?.usage !== undefined) parsed.usage = response.usage;
-  }
-  if (event.type === "response.output_text.delta" && typeof event.delta === "string")
-    parsed.text.push(event.delta);
-  if (event.type === "response.output_item.done") {
-    const item = event.item as Record<string, unknown> | undefined;
-    if (item?.type === "image_generation_call") {
-      if (typeof item.result !== "string" || !item.result)
-        throw new Error("Codex image generation result contained no image data.");
-      parsed.image = {
-        id: typeof item.id === "string" ? item.id : undefined,
-        status: typeof item.status === "string" ? item.status : "completed",
-        result: item.result,
-        revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
-      };
-    }
-  }
-}
-
-export async function parseCodexSse(
-  response: Response,
+async function requestNativeImage(
+  registry: ExtensionContext["modelRegistry"],
+  model: Model<any>,
+  request: ReturnType<typeof buildRequestBody>,
   signal?: AbortSignal,
 ): Promise<ParsedResponse> {
-  if (!response.body) throw new Error("Codex response did not include a stream body.");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   const parsed: ParsedResponse = { text: [] };
-  let buffer = "";
-  try {
-    while (true) {
-      if (signal?.aborted) throw new Error("Image generation was aborted.");
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-      let end: number;
-      while ((end = buffer.indexOf("\n\n")) >= 0) {
-        const data = eventData(buffer.slice(0, end));
-        buffer = buffer.slice(end + 2);
-        if (data) handleEvent(JSON.parse(data) as unknown, parsed);
-      }
+  let payloadReplaced = false;
+  let sawRawEvent = false;
+  let completed = false;
+  function collectImage(value: unknown) {
+    const item = value as Record<string, unknown> | undefined;
+    if (item?.type !== "image_generation_call") return;
+    if (item.status !== "completed")
+      throw new Error(`Image generation did not complete (status: ${String(item.status)}).`);
+    if (typeof item.result !== "string" || !item.result)
+      throw new Error("Image generation result contained no image data.");
+    const id = typeof item.id === "string" ? item.id : undefined;
+    if (parsed.image) {
+      if (parsed.image.result === item.result && parsed.image.id === id) return;
+      throw new Error(
+        "Expected exactly one image generation result; received multiple or conflicting images.",
+      );
     }
-    buffer += decoder.decode();
-    const data = eventData(buffer);
-    if (data) handleEvent(JSON.parse(data) as unknown, parsed);
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      /* already closed */
-    }
-    reader.releaseLock();
+    parsed.image = {
+      id,
+      status: "completed",
+      result: item.result,
+      revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined,
+    };
   }
+  const stream = registry.streamSimple(
+    model,
+    {
+      // The full prompt and image inputs are supplied by onPayload below.
+      messages: [],
+    },
+    {
+      signal,
+      sessionId: request.prompt_cache_key,
+      transport: "sse",
+      maxRetries: MAX_RETRIES,
+      maxRetryDelayMs: MAX_DELAY_MS,
+      onPayload(payload) {
+        if (signal?.aborted) throw new Error("Image generation was aborted.");
+        payloadReplaced = true;
+        // Preserve adapter-resolved routing (notably Azure deployment names), not its chat payload.
+        const routingModel = (payload as { model?: unknown })?.model;
+        return { ...request, model: typeof routingModel === "string" ? routingModel : model.id };
+      },
+      onProviderStreamEvent(value) {
+        if (!value || typeof value !== "object") return;
+        const event = value as Record<string, unknown>;
+        if (typeof event.type !== "string") return;
+        sawRawEvent = true;
+        const response = event.response as
+          | { id?: string; status?: string; usage?: unknown; output?: unknown[] }
+          | undefined;
+        if (
+          event.type === "response.created" ||
+          event.type === "response.completed" ||
+          event.type === "response.done"
+        ) {
+          if (typeof response?.id === "string") parsed.responseId = response.id;
+          if (response?.usage !== undefined) parsed.usage = response.usage;
+        }
+        if (event.type === "response.completed" || event.type === "response.done") {
+          if (response?.status !== "completed")
+            throw new Error(
+              `Image response did not complete (status: ${String(response?.status)}).`,
+            );
+          completed = true;
+          response.output?.forEach(collectImage);
+        }
+        if (event.type === "response.output_item.done") collectImage(event.item);
+        if (event.type === "response.output_text.delta" && typeof event.delta === "string")
+          parsed.text.push(event.delta);
+      },
+    },
+  );
+  // Drain normalized events as well: result() alone leaves their queue retained in memory.
+  for await (const _event of stream) {
+    /* collected before normalization */
+  }
+  const result = await stream.result();
+  if (signal?.aborted || result.stopReason === "aborted")
+    throw new Error("Image generation was aborted.");
+  if (result.stopReason === "error")
+    throw new Error(result.errorMessage || "Image generation provider stream failed.");
+  if (!payloadReplaced || !sawRawEvent)
+    throw new Error(
+      "This Responses provider must support onPayload replacement and onProviderStreamEvent raw events.",
+    );
+  if (!completed || result.stopReason !== "stop")
+    throw new Error(
+      `Image generation ended without a successful completed response (${result.stopReason}).`,
+    );
   return parsed;
 }
 
@@ -408,30 +409,10 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
-function decodeJwtAccountId(token: string): string {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) throw new Error();
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
-    const auth = claims[AUTH_CLAIM] as Record<string, unknown> | undefined;
-    if (typeof auth?.chatgpt_account_id === "string" && auth.chatgpt_account_id)
-      return auth.chatgpt_account_id;
-  } catch {
-    /* normalized below */
-  }
-  throw new Error(
-    "OpenAI Codex OAuth token has no ChatGPT account ID. Run /login for openai-codex again.",
-  );
-}
-
 async function requestImage(
   url: string,
   headers: Headers,
   body: unknown,
-  nativeResponses: boolean,
   signal?: AbortSignal,
 ): Promise<ParsedResponse> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -450,7 +431,7 @@ async function requestImage(
       continue;
     }
     if (response.ok) {
-      return nativeResponses ? parseCodexSse(response, signal) : parseImageGenerationJson(response);
+      return parseImageGenerationJson(response);
     }
     const text = await response.text();
     if (attempt === MAX_RETRIES || ![429, 500, 502, 503, 504].includes(response.status)) {
@@ -478,12 +459,12 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
     name: "gpt_image",
     label: "GPT Image",
     description:
-      "Generate or edit an image through the active GPT 5.5+ provider's Responses endpoint and native gpt-image-2 hosted tool. Uses the active provider's endpoint and authentication, including custom providers such as agent-model, and supports up to five local or recent conversation reference images.",
+      "Generate or edit an image through the active GPT 5.5+ provider's hosted image_generation tool, or generate through its normalized /images/generations API. Uses the active provider's endpoint and authentication, including custom providers such as agent-model, and supports up to five local or recent conversation reference images.",
     promptSnippet:
       "Generate or edit bitmap images through the active GPT provider's hosted image tool.",
     promptGuidelines: [
       "Use gpt_image when the user asks to generate or edit a raster image.",
-      "Do not invoke gpt_image without a clear image request because it consumes the user's Codex image quota.",
+      "Do not invoke gpt_image without a clear image request because it consumes the provider's image quota or billing.",
     ],
     parameters,
     executionMode: "parallel",
@@ -499,11 +480,10 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
         throw new Error(`Model ${provider}/${requestedModel} is not configured in Pi.`);
       }
       const format = params.outputFormat ?? "png";
-      const headers = await buildRequestHeaders(model, () =>
-        ctx.modelRegistry.getApiKeyAndHeaders(model),
-      );
-      const endpoint = resolveImageUrl(model);
       const nativeResponses = usesNativeResponses(model);
+      const endpoint = nativeResponses
+        ? "provider-managed Responses endpoint"
+        : resolveImageUrl(model);
       const session = sanitizePathPart(ctx.sessionManager.getSessionId(), "session");
       const messages: unknown[] = [];
       if (nativeResponses && params.numLastImagesToInclude !== undefined) {
@@ -531,10 +511,20 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
         ],
         details: { provider, model: model.id, endpoint, format },
       });
-      const requestBody = nativeResponses
-        ? buildRequestBody(params, model.id, format, session, images)
-        : buildImageGenerationsBody(params, model.id);
-      const parsed = await requestImage(endpoint, headers, requestBody, nativeResponses, signal);
+      const parsed = nativeResponses
+        ? await requestNativeImage(
+            ctx.modelRegistry,
+            model,
+            buildRequestBody(params, model.id, format, session, images),
+            signal,
+          )
+        : await requestImage(
+            endpoint,
+            await buildRequestHeaders(model, () => ctx.modelRegistry.getApiKeyAndHeaders(model)),
+            buildImageGenerationsBody(params, model.id),
+            signal,
+          );
+      if (signal?.aborted) throw new Error("Image generation was aborted.");
       if (!parsed.image) {
         const text = parsed.text.join("").trim();
         throw new Error(text ? `Codex returned no image: ${text}` : "Codex returned no image.");
@@ -555,7 +545,7 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
         content: [
           {
             type: "text",
-            text: `Generated image via ${provider}/${model.id} using ${IMAGE_MODEL}. Saved to ${savedPath}.`,
+            text: `Generated image via ${provider}/${model.id} using the provider image backend. Saved to ${savedPath}.`,
           },
           { type: "image", data: parsed.image.result, mimeType },
         ],
@@ -563,7 +553,7 @@ export default function gptImageExtension(pi: ExtensionAPI, agentDir = getAgentD
           provider,
           model: model.id,
           endpoint,
-          backendImageModel: IMAGE_MODEL,
+          backendImageModel: undefined,
           outputFormat: actualFormat,
           requestedOutputFormat: format,
           savedPath,

@@ -10,7 +10,6 @@ import extension, {
   buildRequestBody,
   decodeImageData,
   imageFileName,
-  parseCodexSse,
   parseImageGenerationJson,
   resolveImageUrl,
   resolveInputImages,
@@ -43,31 +42,6 @@ function jwt() {
     JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account" } }),
   ).toString("base64url");
   return `header.${payload}.signature`;
-}
-
-function sse(
-  image = PNG.toString("base64"),
-  lineEnd = "\n",
-  imageId: string | null = "../../unsafe",
-) {
-  const events = [
-    { type: "response.created", response: { id: "response-1" } },
-    {
-      type: "response.output_item.done",
-      item: {
-        type: "image_generation_call",
-        ...(typeof imageId === "string" ? { id: imageId } : {}),
-        status: "completed",
-        result: image,
-      },
-    },
-    { type: "response.completed", response: { id: "response-1", usage: { total_tokens: 1 } } },
-  ];
-  return new Response(
-    events
-      .map((event) => `event: message${lineEnd}data: ${JSON.stringify(event)}${lineEnd}${lineEnd}`)
-      .join(""),
-  );
 }
 
 function imageJson(image = PNG.toString("base64")) {
@@ -209,7 +183,6 @@ test("provider API selects its real image endpoint and request contract", async 
     api: "openai-codex-responses",
     baseUrl: "https://chatgpt.com/backend-api/codex",
   } as never;
-  assert.equal(resolveImageUrl(codexModel), "https://chatgpt.com/backend-api/codex/responses");
   assert.equal(usesNativeResponses(codexModel), true);
 
   const parsed = await parseImageGenerationJson(
@@ -226,30 +199,11 @@ test("provider API selects its real image endpoint and request contract", async 
   assert.equal(parsed.image?.revisedPrompt, "revised");
 });
 
-test("request uses configurable routing model and native gpt-image-2 options", () => {
+test("request uses configurable routing model and hosted image_generation options", () => {
   const body = buildRequestBody({ prompt: "draw" }, "gpt-5.5", "webp", "session");
   assert.equal(body.model, "gpt-5.5");
   assert.deepEqual(body.tools, [{ type: "image_generation", output_format: "webp" }]);
   assert.equal(body.tool_choice, "auto");
-});
-
-test("SSE parser handles CRLF and chunk boundaries", async () => {
-  const source = await sse(PNG.toString("base64"), "\r\n").text();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (let index = 0; index < source.length; index += 7)
-        controller.enqueue(Buffer.from(source.slice(index, index + 7)));
-      controller.close();
-    },
-  });
-  const parsed = await parseCodexSse(new Response(stream));
-  assert.equal(parsed.image?.result, PNG.toString("base64"));
-  assert.equal(parsed.responseId, "response-1");
-});
-
-test("SSE parser leaves a missing provider image ID undefined", async () => {
-  const parsed = await parseCodexSse(sse(PNG.toString("base64"), "\n", null));
-  assert.equal(parsed.image?.id, undefined);
 });
 
 test("abortable backoff exits promptly", async () => {

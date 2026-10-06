@@ -18,7 +18,7 @@ It can edit either up to five local images (`referencedImagePaths`) or the most 
 
 - `prompt` (required): detailed generation or editing instructions
 - `outputFormat`: `png` (default), `jpeg`, or `webp`
-- `model`: optional GPT 5.5+ model override resolved under the active provider. By default, it uses the active model. The hosted image model remains gpt-image-2.
+- `model`: optional GPT 5.5+ model override resolved under the active provider. By default, it uses the active model. The provider selects the hosted image backend; the request does not pin an image model.
 - `referencedImagePaths`: up to five local PNG, JPEG, or WebP paths for Responses providers; relative paths resolve from the current working directory
 - `numLastImagesToInclude`: include one to five recent conversation images for Responses providers
 
@@ -29,6 +29,15 @@ Every successful generation is returned inline and written to:
 ```
 
 The provider image-call ID is used when available. Otherwise the extension generates a UUID, so successive images never overwrite one another.
+
+## Native Responses compatibility
+
+Native Responses calls use public `ctx.modelRegistry.streamSimple()` with `onPayload` replacement and a read-only `onProviderStreamEvent` collector. Pi owns request-time auth, resolved base URLs, headers, provider-scoped environment, HTTP transport, parsing, and stream errors. Codex explicitly uses SSE, not WebSocket. Custom Responses providers must implement both hooks; unsupported hooks, missing terminal events, unfinished images, and multiple distinct images fail rather than silently succeeding. An item repeated in the terminal output is collected only once.
+
+- Native requests allow up to three adapter-managed retries and a 30-second server-delay limit. Retryable errors and backoff are adapter-specific, not identical to the previous extension retry loop; excessive server delays fail rather than being clamped. Normalized generation transport and retries are unchanged.
+- Verified offline against Pi 1.0.4's public OpenAI, Azure, and Codex pipelines with fake fetch, not against live hosted services. OpenAI/Azure SDK parsers handle split-byte UTF-8 and CRLF; Pi 1.0.4's Codex parser requires LF framing and rejects CRLF streams. Native calls also inherit Pi 1.0.4's header merge limitation: auth-resolved nulls cannot suppress model-default headers that adapters reapply.
+- Native `details.endpoint` is `"provider-managed Responses endpoint"`, not a guessed URL (Azure/provider configuration may resolve it inside the adapter). `backendImageModel` is unset: neither native nor normalized requests ever pinned `gpt-image-2`, so the old label was not evidence of the actual backend. Payload behavior is unchanged; no explicit image-model selection was added.
+- Raw upstream usage remains in `details.usage`; it is not added to Pi session totals. Pi's normalized chat token cost is not an image-billing estimate.
 
 ## Security and privacy
 
