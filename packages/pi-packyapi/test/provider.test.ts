@@ -95,6 +95,7 @@ test("provider offers interactive login and environment auth", async () => {
   try {
     const auth = await provider.auth.apiKey?.resolve({
       ctx: { env: (name: string) => process.env[name] } as never,
+      signal: new AbortController().signal,
     });
     assert.equal(auth?.auth.apiKey, "environment-key");
   } finally {

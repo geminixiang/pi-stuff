@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { StringEnum, type Model } from "@earendil-works/pi-ai";
+import { StringEnum, type Model, type ProviderHeaders } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
   getAgentDir,
@@ -82,12 +82,15 @@ function hasHeader(headers: Headers, name: string): boolean {
 export async function buildRequestHeaders(
   model: Model<any>,
   getAuth: () => Promise<
-    { ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }
+    { ok: true; apiKey?: string; headers?: ProviderHeaders } | { ok: false; error: string }
   >,
 ): Promise<Headers> {
   const auth = await getAuth();
   if (!auth.ok) throw new Error(auth.error);
-  const headers = new Headers(auth.headers);
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(auth.headers ?? {})) {
+    if (value !== null) headers.set(name, value);
+  }
   headers.set("content-type", "application/json");
   headers.set("accept", "text/event-stream, application/json");
   if (auth.apiKey && !hasHeader(headers, "authorization")) {

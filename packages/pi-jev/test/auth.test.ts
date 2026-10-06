@@ -5,7 +5,7 @@ import {
   ModelRuntime,
   ModelRegistry,
   type ExtensionAPI,
-  type ExtensionContext,
+  type ExtensionToolContext,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { createBuiltinJevModels } from "@geminixiang/jev";
@@ -160,7 +160,7 @@ test("tool uses execution context credentials on the actual SDK request and pres
   for (let i = 1; i <= 2; i++) {
     const ctx = {
       modelRegistry: registry({ auth: { apiKey: `key-${i}` } }).value,
-    } as ExtensionContext;
+    } as ExtensionToolContext;
     const result = await tool!.execute(
       "id",
       {
@@ -186,7 +186,7 @@ test("tool uses execution context credentials on the actual SDK request and pres
       },
       controller.signal,
       undefined,
-      { modelRegistry: registry({ auth: { apiKey: "key-3" } }).value } as ExtensionContext,
+      { modelRegistry: registry({ auth: { apiKey: "key-3" } }).value } as ExtensionToolContext,
     ),
     /aborted/,
   );

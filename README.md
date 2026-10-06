@@ -42,7 +42,7 @@ Unless otherwise noted, packages in this repository are licensed under the MIT L
 
 ## Development
 
-Requires Node.js 22.19 or newer.
+Requires Node.js 22.19 or newer. Pi dependencies target **1.x** (peer range `>=1.0.0 <2.0.0`); development and verification use **1.0.4**.
 
 ```sh
 npm install

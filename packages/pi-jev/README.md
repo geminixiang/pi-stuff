@@ -15,7 +15,7 @@ Workers AI as interchangeable backends.
 pi install npm:@geminixiang/pi-jev
 ```
 
-Requires Pi **0.82.1 or newer** (native provider registration and provider-level auth
+Requires Pi **1.x** (native provider registration and provider-level auth
 resolution). After installing, restart Pi or `/reload`, then configure a backend with
 Pi's interactive `/login`:
 

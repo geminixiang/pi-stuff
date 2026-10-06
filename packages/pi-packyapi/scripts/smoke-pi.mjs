@@ -15,13 +15,13 @@ function compatiblePi() {
     if (!existsSync(candidate)) continue;
     try {
       const version = execFileSync(candidate, ["--version"], { encoding: "utf8" }).trim();
-      const [major, minor] = version.split(".").map(Number);
-      if (major > 0 || (major === 0 && Number.isFinite(minor) && minor >= 84)) return candidate;
+      const [major] = version.split(".").map(Number);
+      if (major === 1) return candidate;
     } catch {
       // Try the next Pi installation on PATH.
     }
   }
-  throw new Error("pi-packyapi smoke test requires Pi 0.84 or newer on PATH.");
+  throw new Error("pi-packyapi smoke test requires Pi 1.x on PATH.");
 }
 
 const pi = compatiblePi();

@@ -1,6 +1,6 @@
 import type {
   Api,
-  Context,
+  TranscriptContext,
   Model,
   ProviderStreams,
   SimpleStreamOptions,
@@ -90,9 +90,9 @@ function packyResponsesApi() {
     },
   });
   return {
-    stream: (model: Model<Api>, context: Context, options?: StreamOptions) =>
+    stream: (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) =>
       responses.stream(model, context, sanitizeOptions(options)),
-    streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+    streamSimple: (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) =>
       responses.streamSimple(model, context, sanitizeOptions(options)),
   } satisfies ProviderStreams;
 }

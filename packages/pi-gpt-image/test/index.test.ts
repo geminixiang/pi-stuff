@@ -6,6 +6,7 @@ import test from "node:test";
 import extension, {
   abortableDelay,
   buildImageGenerationsBody,
+  buildRequestHeaders,
   buildRequestBody,
   decodeImageData,
   imageFileName,
@@ -22,6 +23,20 @@ const PNG = Buffer.from(
   "base64",
 );
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+
+test("request auth omits null header overrides from Pi 1.x", async () => {
+  const headers = await buildRequestHeaders(
+    { api: "openai-responses" } as Parameters<typeof buildRequestHeaders>[0],
+    async () => ({
+      ok: true,
+      apiKey: "key",
+      headers: { authorization: null, "x-removed": null, "x-kept": "value" },
+    }),
+  );
+  assert.equal(headers.get("authorization"), "Bearer key");
+  assert.equal(headers.has("x-removed"), false);
+  assert.equal(headers.get("x-kept"), "value");
+});
 
 function jwt() {
   const payload = Buffer.from(
