@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-mermaid",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Render Mermaid diagrams as Unicode art inside the pi terminal UI",
   "type": "module",
   "license": "MIT",
