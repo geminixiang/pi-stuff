@@ -1,0 +1,46 @@
+{
+  "name": "@geminixiang/pi-tasks",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-level SQLite task list for a Pi session that delegates work to subagents",
+  "keywords": [
+    "pi-extension",
+    "pi-package",
+    "tasks"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-tasks"
+  },
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typebox": "^1.0.52",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0 <2.0.0",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  }
+}
