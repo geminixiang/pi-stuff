@@ -1,0 +1,54 @@
+{
+  "name": "@geminixiang/pi-rex-snap",
+  "version": "0.1.0",
+  "description": "Snapshot Rex sessions with the pi session in each pane, and restore them after a Rex server restart",
+  "keywords": [
+    "pi-extension",
+    "pi-package",
+    "rex",
+    "session",
+    "terminal"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-rex-snap"
+  },
+  "bin": {
+    "rex-snap": "bin/rex-snap.mjs"
+  },
+  "files": [
+    "bin",
+    "extensions",
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0 <2.0.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "extensions/index.ts"
+    ]
+  }
+}
