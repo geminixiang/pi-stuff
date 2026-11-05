@@ -1,0 +1,41 @@
+{
+  "name": "@geminixiang/pi-bg-bash",
+  "version": "0.1.0",
+  "description": "Run long shell commands in the background in pi and get notified when they exit",
+  "keywords": [
+    "background",
+    "bash",
+    "pi-extension",
+    "pi-package"
+  ],
+  "license": "Apache-2.0",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-bg-bash"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "extensions"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.mts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0 <2.0.0",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}
