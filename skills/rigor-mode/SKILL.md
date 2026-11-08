@@ -89,7 +89,7 @@ the evidence you gathered — not when you're out of patience and hoping it's ri
 | New feature | Model the domain before writing code against it. Exhaust 2–3 approaches when the design has real trade-offs; don't default to the first idea. |
 | Refactor / cleanup | Confirm behavior is unchanged before and after. In this repo, lean on `pi-simplify`'s `/code-smell` and `/simplify` for a structured pass. |
 | Multi-file / cross-cutting change | Sequence into independently verifiable steps rather than one large unreviewed diff. |
-| Durable decision or hard-won lesson | Record it, don't just remember it — this repo's `pi-remember` skill writes it into `AGENTS.md`. |
+| Durable decision or hard-won lesson | Record it, don't just remember it: write it into `AGENTS.md` or a skill. |
 | Something needs proof it still works | If this repo has a verification plan, run it through `pi-verification` instead of eyeballing the change. |
 
 ## Before reporting done

@@ -23,8 +23,8 @@
     "test": "npm test --workspaces --if-present",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
-    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
-    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
+    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
+    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
     "verify": "npm run check:suite && npm run check && npm test && npm run lint && npm run fmt:check",
     "pack:check": "npm pack --dry-run --workspaces"
   },
@@ -41,10 +41,7 @@
       "./packages/pi-bg-bash/extensions/index.ts",
       "./packages/pi-diff/extensions",
       "./packages/pi-gpt-image/extensions/index.ts",
-      "./packages/pi-hooks/index.ts",
       "./packages/pi-jev/extensions/index.ts",
-      "./packages/pi-memory/index.ts",
-      "./packages/pi-mermaid/extensions/mermaid.ts",
       "./packages/pi-packyapi/extensions/index.ts",
       "./packages/pi-rex-snap/extensions/index.ts",
       "./packages/pi-simplify/index.ts",
@@ -57,8 +54,7 @@
       "./packages/pi-agent-team/skills",
       "./packages/pi-cicd-status/skills",
       "./packages/pi-jev/skills",
-      "./packages/pi-native-web-search/skills",
-      "./packages/pi-remember/skills"
+      "./packages/pi-native-web-search/skills"
     ]
   },
   "readme": "README.md"
