@@ -2,6 +2,18 @@
 
 Monorepo for `@geminixiang` packages that extend the [Pi coding agent](https://github.com/badlogic/pi-mono).
 
+## Install
+
+Install the whole suite (every extension and skill below) with one command:
+
+```sh
+pi install git:github.com/geminixiang/pi-stuff
+```
+
+Run `pi config` to turn individual resources off. Each package can also be installed on its own, for example `pi install npm:@geminixiang/pi-simplify`. Remove the standalone entry when you switch to the suite, so tools are not registered twice.
+
+Shared skills in [`skills/`](skills): `evidence-chain`, `upstream-pr`, `ui-evidence`, `pr`, `rigor-mode`, `taiwan-patent`.
+
 ## Packages
 
 | Package                                                              | Version                                                                                                                                       | Description                                                                                                                                 |
