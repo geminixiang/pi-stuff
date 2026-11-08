@@ -24,15 +24,23 @@ Use these in order. Drop a section only when its question has no answer for this
 3. **Changes**: 3–5 bullets of changed behavior, one surface per bullet. Mention a non-obvious
    mechanism only when a reviewer would otherwise ask about it.
 4. **Compatibility**: what breaks (name the removed or renamed surfaces), what is unchanged,
-   and what still works for older versions or callers. State what was verified versus inferred.
+   and what still works for older versions or callers. Say why the change is safe in setups
+   beyond the one you tested, and list deliberate non-changes with their reason.
 5. **Testing**: what was exercised against the real system, as a compact table with similar
    scenarios merged into one row. Add one before/after number when it supports the motivation
-   (cost, latency, size). End with what was not tested.
+   (cost, latency, size). Label the states "Before (main)" and "After (this PR)". When the
+   change is visible in a UI, add one annotated before/after screenshot (see `ui-evidence`).
+   End with what was not tested.
+6. **Evidence** (`<details>`, optional): the full chain for reviewers who want it, such as
+   source paths, measurement tables, and the matrix of setups beyond your own. It keeps the body
+   short without dropping proof.
 
 ## Rules
 
-- One idea per section. If a section needs a second table, merge rows or move detail to a
-  follow-up comment.
+- One idea per section. If a section needs a second table, merge rows or move detail into the
+  Evidence `<details>`.
+- Every claim is measured or read in source (see `evidence-chain`). Verify an inferred point
+  before writing it; keep "not tested" for what genuinely cannot be tested.
 - Size by content, not by habit: a full five-section body is roughly 300–450 words. Under
   ~250 usually means the reasoning was cut; over ~600 usually means repetition or logs.
 - Every "before" number must come from the base branch, not an intermediate state of the PR
@@ -44,10 +52,12 @@ Use these in order. Drop a section only when its question has no answer for this
 
 ## Workflow
 
-1. When the structure is unclear, propose the section list with one line each before writing.
+1. Read three recently merged PRs in the repository and match their language and headings.
+   When the structure is unclear, propose the section list with one line each before writing.
 2. Write a draft and show it; apply it to the PR only after approval, unless told to update
    directly.
-3. After a correction, rewrite the whole body around the final diff rather than appending notes.
+3. After a correction or new evidence, rewrite the whole body around the final diff and apply
+   it with `gh pr edit --body-file`, rather than appending notes or comments.
 
 ## Example skeleton
 

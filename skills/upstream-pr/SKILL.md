@@ -5,7 +5,7 @@ description: Upstream PR workflow. Use when the user asks to pick and fix issues
 
 # Upstream PR
 
-Each step ends on its completion criterion. Research, tests and experiments follow the `evidence-chain` skill; screenshots follow the `ui-evidence` skill.
+Each step ends on its completion criterion. Research, tests and experiments follow the `evidence-chain` skill. The PR body follows the `pr` skill, and screenshots follow the `ui-evidence` skill.
 
 ## 1. Pick
 
@@ -46,9 +46,9 @@ Done when the PR branch holds exactly one commit and local `main` matches upstre
 
 ## 6. Write and open
 
-Write the body per [references/pr-writing.md](references/pr-writing.md), then run `gh pr create --body-file <file>`.
+Write the body with the `pr` skill, then run `gh pr create --body-file <file>`.
 
 - After opening, read bot comments; some repos retarget the PR to `dev` automatically.
 - Ask the user before marking the PR ready for review.
 
-Done when every sentence in the body is measured or source, the body reads in about a minute, and the evidence sits in `<details>`.
+Done when the body passes the `pr` skill's rules and every claim in it is measured or source.
