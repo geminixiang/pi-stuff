@@ -19,12 +19,13 @@
   "type": "module",
   "scripts": {
     "check": "npm run check --workspaces --if-present",
+    "check:suite": "node scripts/suite-manifest.mjs",
     "test": "npm test --workspaces --if-present",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
     "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
     "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,memory,hooks,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
-    "verify": "npm run check && npm test && npm run lint && npm run fmt:check",
+    "verify": "npm run check:suite && npm run check && npm test && npm run lint && npm run fmt:check",
     "pack:check": "npm pack --dry-run --workspaces"
   },
   "devDependencies": {
@@ -35,8 +36,29 @@
     "node": ">=22.19.0"
   },
   "pi": {
+    "extensions": [
+      "./packages/pi-agent-team/src/extension.ts",
+      "./packages/pi-bg-bash/extensions/index.ts",
+      "./packages/pi-diff/extensions",
+      "./packages/pi-gpt-image/extensions/index.ts",
+      "./packages/pi-hooks/index.ts",
+      "./packages/pi-jev/extensions/index.ts",
+      "./packages/pi-memory/index.ts",
+      "./packages/pi-mermaid/extensions/mermaid.ts",
+      "./packages/pi-packyapi/extensions/index.ts",
+      "./packages/pi-rex-snap/extensions/index.ts",
+      "./packages/pi-simplify/index.ts",
+      "./packages/pi-supervisor/extensions",
+      "./packages/pi-tasks/extensions/index.ts",
+      "./packages/pi-verification/index.ts"
+    ],
     "skills": [
-      "./skills"
+      "./skills",
+      "./packages/pi-agent-team/skills",
+      "./packages/pi-cicd-status/skills",
+      "./packages/pi-jev/skills",
+      "./packages/pi-native-web-search/skills",
+      "./packages/pi-remember/skills"
     ]
   },
   "readme": "README.md"
