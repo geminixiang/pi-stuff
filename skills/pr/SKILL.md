@@ -21,6 +21,7 @@ Use these in order. Drop a section only when its question has no answer for this
    - Upstream or external change: a short timeline table (version, date, what changed), then
      two or three sentences of reasoning drawn from it.
    - Design choice: the alternatives considered and why this one wins, in a sentence each.
+   - Regression: the commit that lost the behavior, and why restoring it beats adding new logic.
 3. **Changes**: 3–5 bullets of changed behavior, one surface per bullet. Mention a non-obvious
    mechanism only when a reviewer would otherwise ask about it.
 4. **Compatibility**: what breaks (name the removed or renamed surfaces), what is unchanged,
@@ -41,14 +42,16 @@ Use these in order. Drop a section only when its question has no answer for this
   Evidence `<details>`.
 - Every claim is measured or read in source (see `evidence-chain`). Verify an inferred point
   before writing it; keep "not tested" for what genuinely cannot be tested.
-- Size by content, not by habit: a full five-section body is roughly 300–450 words. Under
-  ~250 usually means the reasoning was cut; over ~600 usually means repetition or logs.
+- Size by content, not by habit: sections 1–5 come to roughly 300–450 words, with Evidence
+  excluded. Under ~250 usually means the reasoning was cut; over ~600 usually means repetition
+  or logs that belong in Evidence.
 - Every "before" number must come from the base branch, not an intermediate state of the PR
   branch. If the base branch could not produce it (it failed or lacked the feature), say so.
 - Facts must be re-checked at writing time: release dates, versions, counts, error messages.
 - Keep private details out of public repositories: no internal hosts, customer names, database
   names, IDs, or keys. Use placeholders or describe evidence generically.
-- No command dumps, CI logs, file lists, or review history.
+- No command dumps, CI logs, changed-file lists, or review history. Source references and
+  measurement tables go in Evidence.
 
 ## Workflow
 
@@ -94,4 +97,10 @@ Live against <system>, <scope>:
 | ... | Pass |
 
 <One before/after number>. <What was not tested>.
+
+<details>
+<summary>Evidence</summary>
+
+<Source references, measurement tables, setups beyond your own.>
+</details>
 ```
