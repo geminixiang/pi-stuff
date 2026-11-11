@@ -1,0 +1,39 @@
+{
+  "name": "@geminixiang/pi-loop",
+  "version": "0.1.0",
+  "description": "Session-scoped recurring prompts for pi, modeled on Claude Code's /loop",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "loop",
+    "schedule"
+  ],
+  "license": "Apache-2.0",
+  "author": "geminixiang",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-stuff.git",
+    "directory": "packages/pi-loop"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "extensions"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0 <2.0.0",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.mts"
+  }
+}
