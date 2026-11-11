@@ -684,3 +684,55 @@ test("an external signal is recorded instead of 'lost (no exit code)'", async ()
   assert.equal(m.details.state, "killed");
   assert.match(m.content, /SIGINT/);
 });
+
+test("yield_ms returns output and exit code of a fast job without a later message", async () => {
+  const x = harness();
+  await x.h.session_start({}, x.ctx);
+  const r = await run(
+    x.tools.bash_bg,
+    { command: "echo hi; echo there; exit 2", yield_ms: 5000 },
+    x.ctx,
+  );
+  assert.match(r.content[0].text, /bg1 \[exit 2 after/);
+  assert.match(r.content[0].text, /hi\nthere/);
+  assert.equal(r.details.exitCode, 2);
+  assert.equal(r.details.state, "exited");
+  await sleep(300);
+  assert.equal(x.sent.length, 0);
+  assert.match((await run(x.tools.bash_bg_output, {}, x.ctx)).content[0].text, /bg1 \[exit 2/);
+});
+
+test("yield_ms returns partial output for a slow job and notifies on exit", async () => {
+  const x = harness();
+  await x.h.session_start({}, x.ctx);
+  const r = await run(
+    x.tools.bash_bg,
+    { command: "echo early; sleep 2; echo done", yield_ms: 300 },
+    x.ctx,
+  );
+  assert.match(r.content[0].text, /Started bg1/);
+  assert.match(r.content[0].text, /continues in the background/);
+  assert.match(r.content[0].text, /early/);
+  assert.equal(r.details.state, "running");
+  await waitFor(() => kinds(x, "exit").length === 1, 5000);
+  assert.match(kinds(x, "exit")[0].msg.content, /early\ndone/);
+});
+
+test("yield_ms rejects invalid values and incompatible options", async () => {
+  const x = harness();
+  await x.h.session_start({}, x.ctx);
+  for (const yield_ms of [0, -1, 60_001, Number.NaN])
+    await assert.rejects(run(x.tools.bash_bg, { command: "true", yield_ms }, x.ctx), /yield_ms/);
+  await assert.rejects(
+    run(x.tools.bash_bg, { command: "true", yield_ms: 1000, wait_until: true }, x.ctx),
+    /wait_until/,
+  );
+  await assert.rejects(
+    run(x.tools.bash_bg, { command: "true", yield_ms: 1000, at: "+1m" }, x.ctx),
+    /at/,
+  );
+  assert.match(
+    (await run(x.tools.bash_bg_output, {}, x.ctx)).content[0].text,
+    /No background jobs/,
+  );
+});

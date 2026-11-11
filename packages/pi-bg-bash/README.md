@@ -30,6 +30,7 @@ Run long shell commands in the background so you can keep talking to pi while th
 | `builtin_fail` | `true`     | Use the built-in auth-failure patterns. Set `false` for jobs that relay other programs' output (watchers/monitors)        |
 | `preflight`    |            | Command run first; if it exits non-zero the job does not start and its output is reported                                |
 | `ok_codes`     | `[0]`      | Exit codes that count as success                                                                                         |
+| `yield_ms`     |            | Wait up to this many ms (max 60000) for the job to exit; see [Yield](#yield). Not allowed with `wait_until` or `at`       |
 
 Examples:
 
@@ -65,6 +66,16 @@ Examples:
 // ok_codes: exit 2 means "already merged", not an error
 { "command": "./merge-pr.sh 123", "ok_codes": [0, 2] }
 ```
+
+### Yield
+
+For commands that usually finish in seconds but might hang, set `yield_ms` instead of using plain `bash`:
+
+```jsonc
+{ "command": "npm test", "yield_ms": 10000 }
+```
+
+The job starts exactly like any other `bash_bg` job. If it exits within `yield_ms`, the tool result contains its exit code and the last 200 lines of output (40 KB cap), no exit message is sent later, and the job is listed as finished. If it is still running, the result has the job id, log path and the last 10 lines so far; the job keeps running and the usual messages (`notify`, `notify_on`, `idle_warn`) apply. `yield_ms` must be greater than 0 and at most 60000, and cannot be combined with `wait_until` or `at`. Plain `bash` is still fine for trivially short commands.
 
 ### `bash_bg_output` parameters
 

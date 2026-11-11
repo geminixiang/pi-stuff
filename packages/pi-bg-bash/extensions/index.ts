@@ -52,6 +52,10 @@ const BATCH_BUFFER_LINES = 400;
 const PREFLIGHT_TIMEOUT_MS = 120_000;
 const PREFLIGHT_MAX_BYTES = 16 * 1024;
 const IDLE_LINES = 10;
+const YIELD_MAX_MS = 60_000;
+const YIELD_LINES = 200;
+const YIELD_PARTIAL_LINES = 10;
+const YIELD_POLL_MS = 25;
 
 export interface BgBashOptions {
   stateDir?: string;
@@ -804,12 +808,13 @@ export function createBgBash(options: BgBashOptions = {}) {
       name: "bash_bg",
       label: "Background bash",
       description:
-        "Start a shell command in the background and return immediately with a job id. Use for anything that may take longer than about 30 seconds (builds, deploys, waiting/polling, large queries, sleeps). Output goes to a log file; you get a message when it exits, so end your turn instead of polling. Jobs survive /reload. Options: notify_on (regex) wakes you on matching lines while it keeps running — use for long-lived watchers instead of restarting a script per event; idle_warn warns when output stalls; wait_until re-runs command every interval seconds until it exits 0 (use instead of hand-written polling loops); at delays the start; ok_codes marks expected non-zero exits as success; preflight checks (e.g. auth) before starting; fail_on adds kill patterns (gcloud/gh auth errors are built in). Colors and pagers are disabled by default; use env to override.",
+        "Start a shell command in the background and return immediately with a job id. Use for anything that may take longer than about 30 seconds (builds, deploys, waiting/polling, large queries, sleeps). Output goes to a log file; you get a message when it exits, so end your turn instead of polling. Jobs survive /reload. Options: notify_on (regex) wakes you on matching lines while it keeps running — use for long-lived watchers instead of restarting a script per event; idle_warn warns when output stalls; wait_until re-runs command every interval seconds until it exits 0 (use instead of hand-written polling loops); at delays the start; ok_codes marks expected non-zero exits as success; preflight checks (e.g. auth) before starting; fail_on adds kill patterns (gcloud/gh auth errors are built in). Colors and pagers are disabled by default; use env to override. yield_ms waits up to that many ms: if the command exits by then you get its exit code and output directly (no later message); otherwise it keeps running in the background as usual.",
       promptSnippet:
         "bash_bg: run a long shell command in the background; you are notified when it exits (or on notify_on matches)",
       promptGuidelines: [
         "For shell work likely to take more than ~30 seconds (deploys, builds, waiting on CI/Cloud Build, sleeps, long queries), use bash_bg instead of bash, tell the user what is running, and end your turn; you will be notified when it exits.",
         "Never sleep or poll in a loop waiting for a bash_bg job; use bash_bg_output only when the user asks for progress or you need intermediate output.",
+        "For commands that usually finish in seconds but might hang or run long, use bash_bg with yield_ms (e.g. 10000) instead of bash; plain bash is still fine for trivially short commands.",
         "To wait for a condition, use bash_bg with wait_until: true and a check command instead of a sleep loop; to watch a stream of events, use one long-running job with notify_on instead of a script that exits per event.",
       ],
       parameters: Type.Object({
@@ -881,14 +886,26 @@ export function createBgBash(options: BgBashOptions = {}) {
               "Command run first (e.g. gcloud auth print-access-token >/dev/null); job does not start if it fails",
           }),
         ),
+        yield_ms: Type.Optional(
+          Type.Number({
+            description: `Wait up to this many ms (max ${YIELD_MAX_MS}) for the job to exit and return its output directly; if still running it continues in the background. Not with wait_until or at`,
+          }),
+        ),
         ok_codes: Type.Optional(
           Type.Array(Type.Number(), {
             description: "Exit codes that count as success (default [0])",
           }),
         ),
       }),
-      async execute(_id, params, _signal, _onUpdate, ctx) {
+      async execute(_id, params, signal, _onUpdate, ctx) {
         lastCtx = ctx;
+        const yieldMs = params.yield_ms;
+        if (yieldMs !== undefined) {
+          if (!Number.isFinite(yieldMs) || yieldMs <= 0 || yieldMs > YIELD_MAX_MS)
+            throw new Error(`Invalid yield_ms ${yieldMs}: must be > 0 and <= ${YIELD_MAX_MS}`);
+          if (params.wait_until) throw new Error("yield_ms cannot be combined with wait_until");
+          if (params.at) throw new Error("yield_ms cannot be combined with at");
+        }
         const cwd = params.cwd
           ? isAbsolute(params.cwd)
             ? params.cwd
@@ -945,7 +962,41 @@ export function createBgBash(options: BgBashOptions = {}) {
           text = `Scheduled ${id} to start at ${new Date(scheduledAt).toISOString()} (in ${formatDuration(scheduledAt - now)}). Log: ${job.logPath}\nYou will get a message when it exits. Cancel with bash_bg_kill.`;
         } else {
           const pre = await launch(job, false);
-          if (job.state === "running")
+          if (yieldMs !== undefined && job.state === "running") {
+            const notified = job.notified;
+            job.notified = true;
+            const end = Date.now() + yieldMs;
+            while (job.state === "running" && Date.now() < end && !signal?.aborted && !disposed) {
+              await new Promise((r) => setTimeout(r, Math.min(YIELD_POLL_MS, end - Date.now())));
+            }
+            if (job.state === "running") {
+              job.notified = notified;
+              save();
+            }
+          }
+          if (yieldMs !== undefined && (job.state === "exited" || job.state === "killed")) {
+            const tail = readTail(job.logPath, YIELD_LINES, OUTPUT_MAX_BYTES);
+            text = redact(
+              [
+                describeJob(job, Date.now()),
+                `log: ${job.logPath}`,
+                tail.text
+                  ? `${tail.truncated ? `(last ${YIELD_LINES} lines)\n` : ""}${tail.text}`
+                  : "(no output)",
+              ].join("\n"),
+            );
+          } else if (yieldMs !== undefined && job.state === "running") {
+            const tail = readTail(job.logPath, YIELD_PARTIAL_LINES, NOTIFY_BYTES);
+            text = redact(
+              [
+                `Started ${id} (pid ${job.pid}). Log: ${job.logPath}`,
+                `Still running after ${formatDuration(Date.now() - job.startedAt)}; it continues in the background and you will get a message when it exits${job.notifyOn ? " and when output matches notify_on" : ""}.`,
+                tail.text
+                  ? `${tail.truncated ? `(last ${YIELD_PARTIAL_LINES} lines)\n` : ""}${tail.text}`
+                  : "(no output yet)",
+              ].join("\n"),
+            );
+          } else if (job.state === "running")
             text = `Started ${id} (pid ${job.pid}). Log: ${job.logPath}\nYou will get a message when it exits${job.notifyOn ? " and when output matches notify_on" : ""}. End your turn unless there is other work to do.`;
           else if (pre !== undefined)
             text = redact(`Did not start ${id}: ${job.failReason}\n${pre || "(no output)"}`);
@@ -953,7 +1004,15 @@ export function createBgBash(options: BgBashOptions = {}) {
         }
         return {
           content: [{ type: "text", text }],
-          details: { id, pid: job.pid, logPath: job.logPath, state: job.state },
+          details: {
+            id,
+            pid: job.pid,
+            logPath: job.logPath,
+            state: job.state,
+            ...(job.state === "exited" || job.state === "killed"
+              ? { exitCode: job.exitCode, ok: isOk(job) }
+              : {}),
+          },
         };
       },
     });
