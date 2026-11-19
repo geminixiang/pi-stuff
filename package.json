@@ -42,6 +42,7 @@
       "./packages/pi-diff/extensions",
       "./packages/pi-gpt-image/extensions/index.ts",
       "./packages/pi-jev/extensions/index.ts",
+      "./packages/pi-loop/extensions/index.ts",
       "./packages/pi-packyapi/extensions/index.ts",
       "./packages/pi-rex-snap/extensions/index.ts",
       "./packages/pi-simplify/index.ts",
