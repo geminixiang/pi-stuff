@@ -8,7 +8,7 @@
     "pi-extension",
     "pi-package"
   ],
-  "license": "Apache-2.0",
+  "license": "MIT",
   "author": "geminixiang",
   "repository": {
     "type": "git",
