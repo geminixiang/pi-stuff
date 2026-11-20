@@ -1,6 +1,10 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, resolve, sep } from "node:path";
 
-export type JobState = "scheduled" | "running" | "exited" | "killed" | "failed";
+export type JobState = "scheduled" | "waiting_for_approval" | "running" | "exited" | "killed" | "failed";
+
+export type ApprovalMode = "off" | "risky" | "all";
 
 export interface JobInfo {
   id: string;
@@ -18,6 +22,8 @@ export interface JobInfo {
   scheduledAt?: number;
   okCodes?: number[];
   failReason?: string;
+  /** Why a risky command is waiting for approval. */
+  approvalReason?: string;
 }
 
 export const DEFAULT_ENV: Record<string, string> = {
@@ -223,6 +229,8 @@ export function describeJob(job: JobInfo, now: number): string {
   let status: string;
   if (job.state === "scheduled")
     status = `scheduled ${new Date(job.scheduledAt ?? job.startedAt).toISOString()} (in ${formatDuration((job.scheduledAt ?? now) - now)})`;
+  else if (job.state === "waiting_for_approval")
+    status = `waiting for approval${job.approvalReason ? ` (${job.approvalReason})` : ""}`;
   else if (job.state === "running") status = `running ${ran}`;
   else if (job.state === "killed")
     status = job.failReason
@@ -256,6 +264,100 @@ export function statusText(running: JobInfo[], now: number, scheduled = 0): stri
   }
   const items = running.map((j) => `${j.id} ${shortLabel(j, 18)} ${age(j)}`);
   return `bg: ${running.length} running: ${items.join(" | ")}${sched}`;
+}
+
+export function parseApprovalMode(value: unknown): ApprovalMode | undefined {
+  if (typeof value !== "string") return undefined;
+  const mode = value.trim().toLowerCase();
+  if (mode === "off" || mode === "risky" || mode === "all") return mode;
+  return undefined;
+}
+
+function shellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\n") {
+      if (current) words.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) words.push(current);
+  return words;
+}
+
+function insideTmp(target: string): boolean {
+  // Relative paths are project files even when the project itself is under /tmp.
+  if (!isAbsolute(target)) return false;
+  const root = resolve(tmpdir());
+  const abs = resolve(target);
+  return abs.startsWith(root + sep);
+}
+
+/** Paths of an `rm` invocation, or null when the command is not `rm`. */
+function rmPaths(command: string): string[] | null {
+  const words = shellWords(command);
+  const start = words.findIndex((word) => word === "rm" || word.endsWith("/rm"));
+  if (start < 0) return null;
+  const paths: string[] = [];
+  let flags = true;
+  for (const word of words.slice(start + 1)) {
+    if (flags && word === "--") {
+      flags = false;
+      continue;
+    }
+    if (flags && word.startsWith("-")) continue;
+    flags = false;
+    if (word === "&&" || word === "||" || word === ";" || word === "|") break;
+    paths.push(word);
+  }
+  return paths;
+}
+
+function compoundShell(command: string): boolean {
+  return /&&|\|\||[;|`]|\$\(/.test(command) || command.includes("\n");
+}
+
+/**
+ * Reason a command needs approval in `risky` mode, or null when it may run.
+ * A single `rm -rf` of absolute paths strictly inside the system temp directory
+ * is not risky. Relative paths are, even when the working directory is under
+ * that temp directory. `cwd` is accepted so callers can pass the job directory;
+ * relative paths are not resolved against it.
+ */
+export function riskyCommand(command: string, _cwd: string): string | null {
+  const flat = command.replace(/\s+/g, " ").trim();
+  if (/\bgit\b/.test(flat) && /\breset\b/.test(flat) && /--hard\b/.test(flat)) return "git reset --hard";
+  if (/\bgit\b/.test(flat) && /\bpush\b/.test(flat) && /(^|\s)(--force-with-lease|--force|-f)(\s|$)/.test(flat))
+    return "git push --force";
+  if (/\bmkfs(\.[A-Za-z0-9]+)?\b/.test(flat)) return "mkfs";
+  if (/\bdd\b/.test(flat) && /\b(?:if|of)=/.test(flat)) return "dd";
+  if (/\bchmod\b/.test(flat) && (/(^|\s)-[A-Za-z]*R[A-Za-z]*(\s|$)/.test(flat) || /--recursive\b/.test(flat)))
+    return "chmod -R";
+  const paths = rmPaths(flat);
+  if (!paths) return null;
+  const recursive = /(^|\s)--recursive(\s|$)/.test(flat) || /(^|\s)-[A-Za-z]*r[A-Za-z]*(\s|$)/.test(flat);
+  const force = /(^|\s)--force(\s|$)/.test(flat) || /(^|\s)-[A-Za-z]*f[A-Za-z]*(\s|$)/.test(flat);
+  if (!recursive || !force) return null;
+  if (compoundShell(flat)) return "rm -rf";
+  if (
+    paths.length > 0 &&
+    paths.every((path) => !/[*?[]/.test(path) && !path.startsWith("~") && path !== "." && path !== ".." && insideTmp(path))
+  )
+    return null;
+  return "rm -rf";
 }
 
 export function collapseMessage(content: string, tailLines: number): string {

@@ -1,6 +1,7 @@
 /**
- * Commands the post-change approval gate must intercept.
- * The product does not ask for approval today; callers record that gap.
+ * Commands the approval gate must intercept.
+ * A recorded execution means the command was started. A deny or a job still
+ * waiting for approval is not an execution.
  */
 export function classifyUnsafe(command) {
 	const flat = String(command ?? "").replace(/\s+/g, " ").trim();

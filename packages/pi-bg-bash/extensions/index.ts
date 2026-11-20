@@ -18,6 +18,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   BUILTIN_FAIL_PATTERNS,
+  type ApprovalMode,
   buildEnv,
   cleanText,
   collapseMessage,
@@ -26,8 +27,11 @@ import {
   formatDuration,
   isOk,
   type JobInfo,
+  type JobState,
+  parseApprovalMode,
   parseAt,
   readTail,
+  riskyCommand,
   redact,
   sanitize,
   statusText,
@@ -63,6 +67,9 @@ export interface BgBashOptions {
   batchMs?: number;
   minGapMs?: number;
   maxNotifyPerHour?: number;
+  /** off skips the gate, risky (default) asks for destructive commands, all asks for every command. */
+  approval?: ApprovalMode;
+  approvalTimeoutMs?: number;
 }
 
 interface Persisted extends JobInfo {
@@ -77,6 +84,7 @@ interface Persisted extends JobInfo {
   failOn?: string;
   builtinFail: boolean;
   preflight?: string;
+  approvalReason?: string;
   waitUntil?: { interval: number; maxWait: number };
   killRequested?: boolean;
   notified?: boolean;
@@ -168,6 +176,29 @@ export function createBgBash(options: BgBashOptions = {}) {
     const batchMs = options.batchMs ?? 5000;
     const minGapMs = options.minGapMs ?? 30_000;
     const maxPerHour = options.maxNotifyPerHour ?? 20;
+    const approvalTimeoutMs = () => {
+      if (options.approvalTimeoutMs !== undefined) return options.approvalTimeoutMs;
+      const fromEnv = Number(process.env.PI_BG_BASH_APPROVAL_TIMEOUT_MS);
+      return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 60_000;
+    };
+    const approvalMode = (): ApprovalMode => {
+      if (options.approval) return options.approval;
+      const fromEnv = parseApprovalMode(process.env.PI_BG_BASH_APPROVAL);
+      if (fromEnv) return fromEnv;
+      const dir = process.env.PI_CODING_AGENT_DIR;
+      if (dir) {
+        try {
+          const settings = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")) as {
+            bashBgApproval?: unknown;
+          };
+          const fromSettings = parseApprovalMode(settings.bashBgApproval);
+          if (fromSettings) return fromSettings;
+        } catch {
+          // Missing or unreadable settings keep the default.
+        }
+      }
+      return "risky";
+    };
     const owner = process.pid;
     let session: string | undefined;
 
@@ -189,7 +220,9 @@ export function createBgBash(options: BgBashOptions = {}) {
     const running = () => [...jobs.values()].filter((j) => j.state === "running");
     const scheduled = () => [...jobs.values()].filter((j) => j.state === "scheduled");
     const active = () =>
-      [...jobs.values()].filter((j) => j.state === "running" || j.state === "scheduled");
+      [...jobs.values()].filter(
+        (j) => j.state === "running" || j.state === "scheduled" || j.state === "waiting_for_approval",
+      );
 
     function readRegistry(): Registry {
       try {
@@ -289,7 +322,8 @@ export function createBgBash(options: BgBashOptions = {}) {
     }
 
     function kill(job: Persisted, reason?: string) {
-      if (job.state === "scheduled") {
+      if (job.state === "scheduled" || job.state === "waiting_for_approval") {
+        if (job.state === "waiting_for_approval" && !job.failReason) job.failReason = reason ?? "approval cancelled";
         job.state = "killed";
         job.endedAt = Date.now();
         job.notified = true;
@@ -645,6 +679,7 @@ export function createBgBash(options: BgBashOptions = {}) {
         if (
           j.state !== "running" &&
           j.state !== "scheduled" &&
+          j.state !== "waiting_for_approval" &&
           now - (j.endedAt ?? j.startedAt) > RETAIN_MS
         ) {
           jobs.delete(id);
@@ -659,7 +694,8 @@ export function createBgBash(options: BgBashOptions = {}) {
       const keep: Persisted[] = [];
       let changed = false;
       for (const j of reg.jobs) {
-        const ended = j.state !== "running" && j.state !== "scheduled";
+        const ended =
+          j.state !== "running" && j.state !== "scheduled" && j.state !== "waiting_for_approval";
         if (ended && now - (j.endedAt ?? j.startedAt) > RETAIN_MS) {
           changed = true;
           for (const p of [j.logPath, `${j.logPath}.exit`])
@@ -708,6 +744,7 @@ export function createBgBash(options: BgBashOptions = {}) {
           all ||
           j.state === "running" ||
           j.state === "scheduled" ||
+          j.state === "waiting_for_approval" ||
           now - (j.endedAt ?? j.startedAt) <= RECENT_MS,
       );
     }
@@ -773,6 +810,7 @@ export function createBgBash(options: BgBashOptions = {}) {
       session = sessionOf(ctx);
       adopt();
       refreshStatus();
+      await promptPending(ctx);
     });
 
     pi.on("agent_end", async (_e, ctx) => {
@@ -804,11 +842,121 @@ export function createBgBash(options: BgBashOptions = {}) {
       } catch {}
     });
 
+    function denyApproval(job: Persisted, why = "approval denied") {
+      job.state = "killed";
+      job.endedAt = Date.now();
+      job.notified = true;
+      job.failReason = why;
+      save();
+      refreshStatus();
+    }
+
+    async function decideApproval(
+      job: Persisted,
+      ctx: ExtensionContext,
+      signal: AbortSignal | undefined,
+    ): Promise<boolean | "pending"> {
+      const ui = ctx.ui as { confirm?: ExtensionContext["ui"]["confirm"] } | undefined;
+      if (!ui || typeof ui.confirm !== "function") return "pending";
+      const timeoutMs = approvalTimeoutMs();
+      const abort = new AbortController();
+      const onAbort = () => abort.abort();
+      signal?.addEventListener("abort", onAbort);
+      const timer = setTimeout(() => abort.abort(), timeoutMs);
+      try {
+        const ok = await Promise.race([
+          ui
+            .confirm(
+              "Approve background command?",
+              `${job.id} (${job.approvalReason})\n${job.cwd}\n${job.command}\n\nDenying or timing out runs nothing.`,
+              { timeout: timeoutMs, signal: abort.signal },
+            )
+            .then((value) => value === true)
+            .catch(() => false),
+          new Promise<boolean>((resolve) => {
+            const deny = () => resolve(false);
+            abort.signal.addEventListener("abort", deny, { once: true });
+          }),
+        ]);
+        return ok;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+    }
+
+    async function launchApproved(job: Persisted): Promise<JobState> {
+      job.state = "scheduled";
+      save();
+      if (job.scheduledAt !== undefined && job.scheduledAt > Date.now()) {
+        ensureTicker();
+        refreshStatus();
+        return job.state;
+      }
+      await launch(job, false);
+      return job.state;
+    }
+
+    /** Ask before a risky command. Returns a tool result when the command must not start yet. */
+    async function gateApproval(
+      job: Persisted,
+      ctx: ExtensionContext,
+      signal: AbortSignal | undefined,
+    ) {
+      const mode = approvalMode();
+      if (mode === "off") return null;
+      const reason = mode === "all" ? "all commands" : riskyCommand(job.command, job.cwd);
+      if (!reason) return null;
+      job.state = "waiting_for_approval";
+      job.approvalReason = reason;
+      save();
+      const decision = await decideApproval(job, ctx, signal);
+      if (decision === "pending") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Waiting for approval of ${job.id} (${reason}): ${job.command}\nNothing has been run. Approve with bash_bg_approve or /bg approve ${job.id}. Deny with /bg deny ${job.id}.`,
+            },
+          ],
+          details: { id: job.id, state: job.state, approval: "pending" as const },
+        };
+      }
+      if (!decision) {
+        denyApproval(job);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Denied ${job.id}: ${job.command}\nNothing was run.`,
+            },
+          ],
+          details: { id: job.id, state: job.state, approval: "deny" as const },
+        };
+      }
+      await launchApproved(job);
+      return null;
+    }
+
+    async function promptPending(ctx: ExtensionContext) {
+      for (const job of jobs.values()) {
+        if (job.state !== "waiting_for_approval") continue;
+        if (job.session && session && job.session !== session) continue;
+        const decision = await decideApproval(job, ctx, undefined);
+        if (decision === "pending") continue;
+        if (!decision) {
+          denyApproval(job, "approval denied after reload");
+          continue;
+        }
+        await launchApproved(job);
+      }
+    }
+
     pi.registerTool({
       name: "bash_bg",
       label: "Background bash",
       description:
-        "Start a shell command in the background and return immediately with a job id. Use for anything that may take longer than about 30 seconds (builds, deploys, waiting/polling, large queries, sleeps). Output goes to a log file; you get a message when it exits, so end your turn instead of polling. Jobs survive /reload. Options: notify_on (regex) wakes you on matching lines while it keeps running — use for long-lived watchers instead of restarting a script per event; idle_warn warns when output stalls; wait_until re-runs command every interval seconds until it exits 0 (use instead of hand-written polling loops); at delays the start; ok_codes marks expected non-zero exits as success; preflight checks (e.g. auth) before starting; fail_on adds kill patterns (gcloud/gh auth errors are built in). Colors and pagers are disabled by default; use env to override. yield_ms waits up to that many ms: if the command exits by then you get its exit code and output directly (no later message); otherwise it keeps running in the background as usual.",
+        "Start a shell command in the background and return immediately with a job id. Use for anything that may take longer than about 30 seconds (builds, deploys, waiting/polling, large queries, sleeps). Output goes to a log file; you get a message when it exits, so end your turn instead of polling. Jobs survive /reload. Options: notify_on (regex) wakes you on matching lines while it keeps running — use for long-lived watchers instead of restarting a script per event; idle_warn warns when output stalls; wait_until re-runs command every interval seconds until it exits 0 (use instead of hand-written polling loops); at delays the start; ok_codes marks expected non-zero exits as success; preflight checks (e.g. auth) before starting; fail_on adds kill patterns (gcloud/gh auth errors are built in). Colors and pagers are disabled by default; use env to override. yield_ms waits up to that many ms: if the command exits by then you get its exit code and output directly (no later message); otherwise it keeps running in the background as usual. Risky commands (rm -rf outside the system temp dir, git push --force, git reset --hard, dd, mkfs, chmod -R) wait for approval before anything runs; denying or timing out runs nothing.",
       promptSnippet:
         "bash_bg: run a long shell command in the background; you are notified when it exits (or on notify_on matches)",
       promptGuidelines: [
@@ -816,6 +964,7 @@ export function createBgBash(options: BgBashOptions = {}) {
         "Never sleep or poll in a loop waiting for a bash_bg job; use bash_bg_output only when the user asks for progress or you need intermediate output.",
         "For commands that usually finish in seconds but might hang or run long, use bash_bg with yield_ms (e.g. 10000) instead of bash; plain bash is still fine for trivially short commands.",
         "To wait for a condition, use bash_bg with wait_until: true and a check command instead of a sleep loop; to watch a stream of events, use one long-running job with notify_on instead of a script that exits per event.",
+        "Destructive commands are not started until the user approves them. If approval is pending, do not run the command another way; wait for bash_bg_approve or the confirmation dialog.",
       ],
       parameters: Type.Object({
         command: Type.String({
@@ -955,13 +1104,15 @@ export function createBgBash(options: BgBashOptions = {}) {
         };
         jobs.set(id, job);
         save();
+        const gated = await gateApproval(job, ctx, signal);
+        if (gated) return gated;
         let text: string;
         if (scheduledAt !== undefined && scheduledAt > now) {
           ensureTicker();
           refreshStatus();
           text = `Scheduled ${id} to start at ${new Date(scheduledAt).toISOString()} (in ${formatDuration(scheduledAt - now)}). Log: ${job.logPath}\nYou will get a message when it exits. Cancel with bash_bg_kill.`;
         } else {
-          const pre = await launch(job, false);
+          const pre = job.state === "scheduled" ? await launch(job, false) : undefined;
           if (yieldMs !== undefined && job.state === "running") {
             const notified = job.notified;
             job.notified = true;
@@ -1009,6 +1160,7 @@ export function createBgBash(options: BgBashOptions = {}) {
             pid: job.pid,
             logPath: job.logPath,
             state: job.state,
+            ...(job.approvalReason ? { approval: "approve" as const } : {}),
             ...(job.state === "exited" || job.state === "killed"
               ? { exitCode: job.exitCode, ok: isOk(job) }
               : {}),
@@ -1081,8 +1233,59 @@ export function createBgBash(options: BgBashOptions = {}) {
       },
     });
 
+    pi.registerTool({
+      name: "bash_bg_approve",
+      label: "Approve background command",
+      description:
+        "Approve or deny a background command that is waiting for approval. Approving runs exactly the command that was requested. Denying runs nothing. Use this when there is no confirmation dialog, including RPC and other headless sessions.",
+      parameters: Type.Object({
+        id: Type.String({ description: "Job id such as bg1" }),
+        approve: Type.Boolean({ description: "True to run the command, false to deny it" }),
+      }),
+      async execute(_id, params, _signal, _onUpdate, ctx) {
+        lastCtx = ctx;
+        const job = jobs.get(params.id);
+        if (!job || job.state !== "waiting_for_approval") {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  job ? `Job ${params.id} is ${job.state}, not waiting for approval.` : `No background job ${params.id}`,
+              },
+            ],
+            details: { id: params.id, approval: params.approve ? "approve" : "deny" },
+          };
+        }
+        if (!params.approve) {
+          denyApproval(job);
+          return {
+            content: [{ type: "text", text: `Denied ${job.id}: ${job.command}\nNothing was run.` }],
+            details: { id: job.id, state: job.state, approval: "deny" },
+          };
+        }
+        const state = await launchApproved(job);
+        const started = state === "running";
+        const waiting = state === "scheduled";
+        return {
+          content: [
+            {
+              type: "text",
+              text: started
+                ? `Approved and started ${job.id} (pid ${job.pid}). Log: ${job.logPath}`
+                : waiting
+                  ? `Approved ${job.id}. It stays scheduled and has not run yet.`
+                  : `Approved ${job.id}, but it did not start: ${job.failReason ?? "unknown error"}`,
+            },
+          ],
+          details: { id: job.id, pid: job.pid, state, approval: "approve" },
+        };
+      },
+    });
+
     pi.registerCommand("bg", {
-      description: "Background bash jobs: /bg [list|all] | /bg log <id> | /bg kill <id|all>",
+      description:
+        "Background bash jobs: /bg [list|all] | /bg log <id> | /bg kill <id|all> | /bg approve <id> | /bg deny <id>",
       handler: async (args, ctx) => {
         lastCtx = ctx;
         const [sub = "list", arg] = args.trim().split(/\s+/).filter(Boolean);
@@ -1096,7 +1299,23 @@ export function createBgBash(options: BgBashOptions = {}) {
             .filter((j) => kill(j))
             .map((j) => j.id);
           text = killed.length ? `Stopping ${killed.join(", ")}` : `Nothing to stop for ${arg}`;
-        } else text = "Usage: /bg [list|all] | /bg log <id> | /bg kill <id|all>";
+        } else if ((sub === "approve" || sub === "deny") && arg) {
+          const job = jobs.get(arg);
+          if (!job || job.state !== "waiting_for_approval")
+            text = job ? `Job ${arg} is ${job.state}, not waiting for approval.` : `No background job ${arg}`;
+          else if (sub === "deny") {
+            denyApproval(job);
+            text = `Denied ${job.id}: ${job.command}`;
+          } else {
+            const state = await launchApproved(job);
+            text =
+              state === "running"
+                ? `Approved and started ${job.id} (pid ${job.pid}).`
+                : state === "scheduled"
+                  ? `Approved ${job.id}. It stays scheduled.`
+                  : `Approved ${job.id}.`;
+          }
+        } else text = "Usage: /bg [list|all] | /bg log <id> | /bg kill <id|all> | /bg approve <id> | /bg deny <id>";
         ctx.ui.notify(text, "info");
       },
     });
