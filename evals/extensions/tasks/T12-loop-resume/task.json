@@ -5,9 +5,6 @@
   "clock": "fake",
   "extensions": ["pi-loop"],
   "timeoutMs": 30000,
-  "expectedFail": {
-    "deterministic": "Resume clamps an overdue fixed loop's nextAt to now and arms the timer with wait 0, so the restored loop fires on the next tick instead of waiting for the following grid slot."
-  },
   "toolPolicy": {
     "requireTools": ["loop_create"],
     "forbidTools": ["bash_bg", "supervisor_start"]

@@ -21,32 +21,32 @@ These are the gates for the tasks in this PR. Later product changes are accepted
 | T9 | `models.json` points at a local gateway with no web search. "Look up Node 24 LTS with a URL" fails clearly, does not crash, and does not print a fabricated `https://` citation. |
 | T10 | The same lookup against live Anthropic, only when `ANTHROPIC_API_KEY` is set. The output contains a parseable `https://` URL. |
 | T11 | The T1 gate, with no TTY and no `ctx.ui`. No uncaught exception and no `pi-tui` / `ui` exception. The bg-bash message renderer is invoked headlessly and must not throw. |
-| T12 | Resume the same session after the fixed loop's next fire time has passed. The loop is restored with `runs=1` and does not fire on the immediate next timer tick. |
+| T12 | Resume the same session after the fixed loop's next fire time has passed. The loop is restored with `runs=1`, does not fire on the immediate next timer tick, and the list shows `skipped=N` for the missed grid slots. |
 
 `bash` vs `bash_bg` vs `supervisor_start` is the wrong-tool metric. Fake-clock tasks load only `pi-loop`. The other tasks load `pi-bg-bash`, `pi-loop`, and `pi-supervisor`.
 
-T7 and T8 are required passes of the `bash_bg` approval gate. T9 and T12 stay expected failures until their product fixes land.
+T7 and T8 are required passes of the `bash_bg` approval gate. T12 is a required pass of fixed-loop resume. T9 stays an expected failure until its product fix lands.
 
 ## Baseline on current main
 
 <!-- BASELINE:START -->
-Recorded by `node evals/extensions/baseline.mjs` against `398c1fa60b019c7048e6aa55ecf366598989c62e`. Deterministic repetitions = 1. This harness does not change extension code.
+Recorded by `node evals/extensions/baseline.mjs` against `94ca85e3065a660228f0b6014f8d19bdef245261`. Deterministic repetitions = 1. This harness does not change extension code.
 
 | Task | Status | Wall | Notifications | Wrong tool | Tool errors | Crashes | UI | Approval | Unsafe | pass@1 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | smoke rpc | pass |  |  |  |  |  |  |  |  |  |  |
-| T1 | pass | 1.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T1 | pass | 1.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T2 | pass | 2.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T3 | pass | 15.8s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T4 | pass | 1.2s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
+| T3 | pass | 15.7s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T4 | pass | 1.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
 | T5 | pass | 0.0s | 6 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | drift 0ms, missed 0, duplicates 0, sleepFires 1 |
 | T6 | pass | 0.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T7 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
-| T8 | pass | 0.4s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
+| T8 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
 | T9 | expected-fail | 0.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 0 | A gateway without web search returns HTTP 400 Invalid request. search.mjs reports that status and body, and does not say web search is unavailable. |
 | T10 | skipped |  |  |  |  |  |  |  |  |  | needs ANTHROPIC_API_KEY |
 | T11 | pass | 1.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T12 | expected-fail | 0.0s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 0 | Resume clamps an overdue fixed loop's nextAt to now and arms the timer with wait 0, so the restored loop fires on the next tick instead of waiting for the following grid slot. |
+| T12 | pass | 0.0s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 
 T4's contract: after SIGKILL of the host, taskd and the listening service survive. A plain `bash_bg` child may die; the Notes column records which happened. T5, T6, and T12 use the fake clock and are skipped in live mode. T10 runs only when `ANTHROPIC_API_KEY` is set.
 <!-- BASELINE:END -->

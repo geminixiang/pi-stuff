@@ -8,6 +8,8 @@
  *
  * Jobs fire only while pi runs and the agent is idle; missed ticks are not replayed.
  * Fixed jobs are persisted to the session and restored on resume; self-paced ones are not.
+ * An overdue fixed job does not fire on restore: missed grid slots are skipped and the
+ * next run is the following slot. The skipped count is kept on the job and shown in lists.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,7 +44,20 @@ interface Job {
 	nextAt: number;
 	createdAt: number;
 	runs: number;
+	/** Fixed-interval slots skipped on resume because they were already due. */
+	skipped?: number;
 	expiring?: boolean;
+}
+
+/**
+ * Next fixed-interval slot strictly after `now`.
+ * Slots are `nextAt + k * intervalMs`. Every slot at or before `now` is skipped,
+ * so a restored loop does not fire on the immediate next tick.
+ */
+export function skipMissedSlots(nextAt: number, intervalMs: number, now: number): { nextAt: number; skipped: number } {
+	if (nextAt > now) return { nextAt, skipped: 0 };
+	const skipped = Math.floor((now - nextAt) / intervalMs) + 1;
+	return { nextAt: nextAt + skipped * intervalMs, skipped };
 }
 
 export function parseDuration(s: string): number | undefined {
@@ -157,8 +172,9 @@ export default function (pi: ExtensionAPI) {
 	const describe = (j: Job) => {
 		const when = j.intervalMs ? `every ${fmt(j.intervalMs)}` : "self-paced";
 		const inS = Math.max(0, Math.round((j.nextAt - Date.now()) / 1000));
+		const skipped = j.skipped ? `  skipped=${j.skipped}` : "";
 		const p = j.prompt.length > 60 ? `${j.prompt.slice(0, 57)}...` : j.prompt;
-		return `${j.id}  ${when}  next in ${inS}s  runs=${j.runs}  ${p}`;
+		return `${j.id}  ${when}  next in ${inS}s  runs=${j.runs}${skipped}  ${p}`;
 	};
 
 	const add = (prompt: string, intervalMs: number | undefined): Job | string => {
@@ -248,10 +264,16 @@ export default function (pi: ExtensionAPI) {
 			if (e.type === "custom" && e.customType === ENTRY) latest = e.data?.jobs;
 		}
 		const now = Date.now();
+		let realigned = false;
 		for (const j of latest ?? []) {
 			if (!j.intervalMs || now - j.createdAt >= EXPIRE_MS) continue;
-			jobs.push({ ...j, nextAt: Math.max(j.nextAt, now) });
+			const aligned = skipMissedSlots(j.nextAt, j.intervalMs, now);
+			const skipped = (j.skipped ?? 0) + aligned.skipped;
+			if (aligned.skipped > 0) realigned = true;
+			jobs.push({ ...j, nextAt: aligned.nextAt, skipped });
 		}
+		// Remember the new slot and the skipped count. A later resume then counts only new misses.
+		if (realigned) persist();
 		schedule();
 	};
 
