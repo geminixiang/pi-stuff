@@ -415,6 +415,40 @@ function resolveResponsesUrl(baseUrl) {
 	return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
 }
 
+const WEB_SEARCH_HINT =
+	"Native web search is supported for openai-codex and anthropic, and for the OpenAI Responses API at api.openai.com. Local servers, llama.cpp, and other custom gateways do not provide that tool.";
+
+export function webSearchUnavailableMessage(provider, model) {
+	const who = model ? `${provider}/${model}` : String(provider);
+	return `web search unavailable for ${who}. ${WEB_SEARCH_HINT}`;
+}
+
+function endpointHost(baseUrl) {
+	try {
+		return new URL(baseUrl).hostname.toLowerCase();
+	} catch {
+		return "";
+	}
+}
+
+/** True when this provider is known to expose a native web-search tool. */
+export function hasNativeWebSearch(provider, baseUrl) {
+	if (provider === "openai-codex" || provider === "anthropic") return true;
+	return endpointHost(baseUrl) === "api.openai.com";
+}
+
+/**
+ * A Responses error that means this server has no web_search tool.
+ * A generic HTTP 400 stays a request failure so a bad payload is not relabeled.
+ */
+export function responsesLackWebSearch(status, detail) {
+	if (status === 404) return true;
+	if (status !== 400) return false;
+	return /web[_ ]search|unsupported tool|unknown tool|invalid tool|unrecognized tool|tool type|does not support tools|tools are not supported/i.test(
+		String(detail ?? ""),
+	);
+}
+
 function resolveConfiguredProvider(provider, settings, modelsConfig, requestedModel) {
 	const providerConfig = modelsConfig?.providers?.[provider];
 	if (!providerConfig) {
@@ -454,6 +488,7 @@ async function runResponsesSearch({ provider, model, apiKey, query, purpose, tim
 	});
 	if (!res.ok) {
 		const detail = await res.text();
+		if (responsesLackWebSearch(res.status, detail)) throw new Error(webSearchUnavailableMessage(provider, model));
 		throw new Error(`${provider} Responses request failed (${res.status}): ${detail}`);
 	}
 	return parseResponsesText(res, provider);
@@ -631,6 +666,7 @@ async function main() {
 	let text;
 	if (provider !== "openai-codex" && provider !== "anthropic") {
 		model = resolveConfiguredProvider(provider, settings, modelsConfig, args.model || process.env.PI_MODEL);
+		if (!hasNativeWebSearch(provider, model.baseUrl)) throw new Error(webSearchUnavailableMessage(provider, model.id));
 		text = await runResponsesSearch({
 			provider,
 			model: model.id,

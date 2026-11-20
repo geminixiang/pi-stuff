@@ -1,7 +1,5 @@
 import { commonFailures } from "../../harness/trace.mjs";
 
-const CLEAR = /web[_ ]search|native search|does not support search|search is not available|search is unavailable/i;
-
 export async function check(ctx) {
 	const failures = commonFailures(ctx.trace);
 	const search = ctx.trace.observations.find((item) => item.type === "search");
@@ -12,7 +10,10 @@ export async function check(ctx) {
 		if (search.code === 0) failures.push("search succeeded against a gateway with no web search");
 		if (search.code == null || /uncaught|SyntaxError/.test(text)) failures.push("search crashed");
 		if (citations.length) failures.push(`fabricated citations: ${citations.join(" ")}`);
-		if (!CLEAR.test(text)) failures.push(`expected: search error is vague: ${search.stderr.trim().slice(0, 240)}`);
+		if (!/web search unavailable for local-gateway\/fake-model/i.test(text)) {
+			failures.push(`search did not say web search is unavailable for local-gateway/fake-model: ${search.stderr.trim().slice(0, 240)}`);
+		}
+		if (search.gatewayHits !== 0) failures.push(`search called the gateway ${search.gatewayHits} time(s)`);
 	}
 	return { ok: failures.length === 0, failures };
 }

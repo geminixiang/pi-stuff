@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Fail fast when the active provider has no native web search. The script prints `web search unavailable for <provider>/<model>` and does not call `/responses`. An HTTP 404 from `/responses`, or an HTTP 400 that says the `web_search` tool is missing, uses the same message.
+
 ## [0.2.0] - 2026-10-06
 
 ### Changed

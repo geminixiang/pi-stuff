@@ -36,7 +36,7 @@ Optional flags:
 - `--timeout <milliseconds>` (minimum 1000; default 120000)
 - `--json`
 
-The script uses the current Pi session's `PI_PROVIDER` and `PI_MODEL` by default. Built-in `openai-codex` and `anthropic` providers use their native web-search transports. Other active providers are looked up by their actual ID in `models.json` and use an OpenAI Responses-compatible `/responses` endpoint. Pass `--provider` only when you intentionally want to override the current session.
+The script uses the current Pi session's `PI_PROVIDER` and `PI_MODEL` by default. Built-in `openai-codex` and `anthropic` providers use their native web-search transports. A provider whose base URL is `api.openai.com` uses the OpenAI Responses `web_search` tool. Every other provider, including local servers, llama.cpp, and custom gateways, stops before any request and prints `web search unavailable for <provider>/<model>`, plus which providers are supported. An HTTP 404 from `/responses`, or an HTTP 400 that says the `web_search` tool is missing, uses that same message. Pass `--provider` only when you intentionally want to override the current session.
 
 For configured providers, the script reads the provider's base URL, model, and API-key reference from `models.json`. For direct providers, it reuses credentials in Pi's `auth.json`. It prefers `@earendil-works/pi-ai` but retains compatibility with legacy `@mariozechner/pi-ai` installations.
 

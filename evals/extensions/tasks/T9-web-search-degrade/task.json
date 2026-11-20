@@ -5,9 +5,6 @@
   "clock": "real",
   "extensions": ["pi-loop"],
   "timeoutMs": 30000,
-  "expectedFail": {
-    "deterministic": "A gateway without web search returns HTTP 400 Invalid request. search.mjs reports that status and body, and does not say web search is unavailable."
-  },
   "toolPolicy": {
     "requireTools": [],
     "forbidTools": []
