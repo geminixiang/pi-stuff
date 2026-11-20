@@ -1,0 +1,13 @@
+{
+  "id": "T10",
+  "title": "Live native web search returns a URL",
+  "headless": false,
+  "clock": "real",
+  "requiresKey": ["ANTHROPIC_API_KEY"],
+  "extensions": ["pi-loop"],
+  "timeoutMs": 180000,
+  "toolPolicy": {
+    "requireTools": [],
+    "forbidTools": []
+  }
+}

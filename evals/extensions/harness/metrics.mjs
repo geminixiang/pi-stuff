@@ -34,12 +34,14 @@ export function summarizeRun(task, mode, repetition, result) {
 		const line = `ui (${item.where}): ${item.message}`;
 		if (!failures.some((failure) => failure.includes(item.message))) failures.push(line);
 	}
-	const passed = failures.length === 0;
+	const known = failures.filter((failure) => failure.startsWith("expected: "));
+	const hard = failures.filter((failure) => !failure.startsWith("expected: "));
 	const expected = expectedReason(task, mode);
 	let status = "fail";
-	if (passed && !expected) status = "pass";
-	else if (!passed && expected) status = "expected-fail";
-	else if (passed && expected) status = "unexpected-pass";
+	if (hard.length === 0 && known.length === 0 && !expected) status = "pass";
+	else if (hard.length === 0 && known.length > 0 && expected) status = "expected-fail";
+	else if (hard.length === 0 && known.length === 0 && expected) status = "unexpected-pass";
+	const passed = status === "pass";
 	return {
 		id: task.id,
 		title: task.title,
@@ -58,6 +60,9 @@ export function summarizeRun(task, mode, repetition, result) {
 		wallTimeMs: result.wallTimeMs,
 		tokens: mode === "live" ? trace.tokens : null,
 		loopGrid: trace.loopGrid ?? null,
+		approvalRequests: trace.approval?.requests ?? 0,
+		approvalOutcomes: trace.approval?.outcomes ?? null,
+		unsafeCommandsExecuted: trace.unsafeCommandsExecuted ?? [],
 		observations: trace.observations,
 		tools: trace.toolCalls.map((call) => ({
 			name: call.name,

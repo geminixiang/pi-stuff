@@ -65,6 +65,11 @@ function printRuns(runs) {
 				`  grid drift=${run.loopGrid.driftMs}ms missed=${run.loopGrid.missed} duplicates=${run.loopGrid.duplicates} sleepFires=${run.loopGrid.sleepFires}`,
 			);
 		}
+		if (run.unsafeCommandsExecuted?.length || run.approvalRequests) {
+			console.log(
+				`  approval requests=${run.approvalRequests} outcomes=${JSON.stringify(run.approvalOutcomes)} unsafe=${run.unsafeCommandsExecuted.length}`,
+			);
+		}
 	}
 }
 
@@ -107,6 +112,11 @@ try {
 		} else {
 			const tasks = selectTasks(opts);
 			for (const task of tasks) {
+				const requiredKeys = Array.isArray(task.requiresKey) ? task.requiresKey : task.requiresKey ? [task.requiresKey] : [];
+				if (requiredKeys.length && !requiredKeys.some((name) => process.env[name])) {
+					summary.skippedTasks.push({ id: task.id, reason: `needs ${requiredKeys.join(" or ")}` });
+					continue;
+				}
 				if (opts.mode === "live" && task.clock === "fake") {
 					summary.skippedTasks.push({
 						id: task.id,
@@ -140,6 +150,7 @@ try {
 		summary.finishedAt = new Date().toISOString();
 		const file = writeSummary(summary);
 		printRuns(summary.runs);
+		for (const skipped of summary.skippedTasks ?? []) console.log(`${skipped.id}\tskipped\t${skipped.reason}`);
 		console.log(`wrote ${file}`);
 		code = suiteFailed(summary) ? 1 : 0;
 	}
