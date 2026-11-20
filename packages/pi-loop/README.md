@@ -17,8 +17,10 @@ Recurring prompts inside a pi session, modeled on Claude Code's `/loop`.
   (inlines repo/PR/commands from the conversation, adds a done condition), then the agent calls `loop_create`.
   Use `--raw` to skip.
 - Jobs fire only while pi is running **and idle**; they never interrupt a turn and missed ticks are not replayed.
+  While pi stays open, a late timer still runs once and the next run is one interval after that fire.
 - Up to 50 loops; each expires after 7 days (with one final run).
 - Fixed-interval loops are persisted in the session and restored on `--resume`/`--continue`; self-paced loops are not.
+  If a fixed loop is already due when it is restored, it does not fire on the next tick. Slots that passed while pi was down are skipped, and the next run is the following grid slot on the loop's original cadence. `loop_list` and `/loop list` show `skipped=N` for how many of those slots were skipped. A loop that is not yet due keeps its scheduled time.
 - Default prompt: `.pi/loop.md` in the project, then `~/.pi/agent/loop.md`, then a built-in maintenance prompt.
 - Tune a loop after a few runs with `/loop edit`, or just ask in plain words ("把這個 loop 改成每 30 分鐘").
   The agent reads the full prompt (`loop_list` with id) and rewrites it via `loop_update`, keeping id, run count and expiry.

@@ -10,7 +10,11 @@ export async function check(ctx) {
 			failures.push("fixed loop was not restored with its run count");
 		}
 		if (overdueFired(resume)) {
-			failures.push("expected: resumed loop fired immediately while its next tick was overdue");
+			failures.push("resumed loop fired immediately while its next tick was overdue");
+		}
+		const skipped = /skipped=(\d+)/.exec(String(resume.list));
+		if (!skipped || Number(skipped[1]) < 1) {
+			failures.push("loop list did not show how many overdue slots were skipped");
 		}
 	}
 	return { ok: failures.length === 0, failures };

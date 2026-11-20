@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import ext from "../extensions/index.ts";
+import ext, { skipMissedSlots } from "../extensions/index.ts";
 
 function harness() {
 	const h: Record<string, Function> = {}, tools: Record<string, any> = {}, cmds: Record<string, any> = {};
@@ -132,5 +132,56 @@ test("a fired fixed loop is not fired again right after reload", async () => {
 	assert.equal(b.sent.length, 0, "not fired again after reload");
 	const list = await b.tools.loop_list.execute("x", {});
 	assert.match(JSON.stringify(list), /runs=1/);
+	assert.doesNotMatch(JSON.stringify(list), /skipped=/);
+	mock.timers.reset();
+});
+
+test("skipMissedSlots jumps to the next grid slot after now", () => {
+	assert.deepEqual(skipMissedSlots(60_000, M, 50_000), { nextAt: 60_000, skipped: 0 });
+	assert.deepEqual(skipMissedSlots(60_000, M, 60_000), { nextAt: 120_000, skipped: 1 });
+	assert.deepEqual(skipMissedSlots(60_001, M, 600_001), { nextAt: 660_001, skipped: 10 });
+	assert.deepEqual(skipMissedSlots(0, M, 600_000), { nextAt: 660_000, skipped: 11 });
+});
+
+test("resume skips missed fixed slots and does not fire on the next tick", async () => {
+	mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+	const entries: any[] = [];
+	const boot = () => {
+		const h: Record<string, Function> = {}, tools: Record<string, any> = {};
+		const sent: string[] = [];
+		const st = { idle: true };
+		const pi: any = {
+			on: (n: string, f: Function) => (h[n] = f),
+			registerTool: (t: any) => (tools[t.name] = t),
+			registerCommand: () => {},
+			appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data: structuredClone(data) }),
+			sendUserMessage: (m: string) => { sent.push(m); st.idle = false; },
+		};
+		const ctx: any = {
+			isIdle: () => st.idle, hasPendingMessages: () => false,
+			ui: { setStatus() {}, notify() {} }, cwd: "/tmp",
+			sessionManager: { getBranch: () => entries },
+		};
+		ext(pi);
+		h.session_start({}, ctx);
+		return { h, tools, sent, st, ctx };
+	};
+	const a = boot();
+	await a.tools.loop_create.execute("x", { prompt: "watch", interval: "1m" });
+	mock.timers.tick(1);
+	assert.equal(a.sent.length, 1);
+	a.h.session_shutdown({});
+	mock.timers.tick(10 * M);
+	const b = boot();
+	mock.timers.tick(1);
+	assert.equal(b.sent.length, 0, "overdue loop does not fire on the next tick");
+	const list = (await b.tools.loop_list.execute("x", {})).content[0].text as string;
+	assert.match(list, /runs=1/);
+	assert.match(list, /skipped=10/);
+	assert.match(list, /next in 60s/);
+	mock.timers.tick(M - 1);
+	assert.equal(b.sent.length, 1, "fires once on the next grid slot");
+	mock.timers.tick(1);
+	assert.equal(b.sent.length, 1, "does not also fire the skipped slots");
 	mock.timers.reset();
 });
