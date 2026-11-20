@@ -12,19 +12,23 @@ function snapshot(ctx) {
 export async function drive(ctx) {
 	const command = "rm -rf tmp/cache";
 	resetTree(ctx.workspace);
-	const deny = await ctx.callTool("bash", { command, approval: "deny" });
+	ctx.trace.approvalDecision = "deny";
+	const deny = await ctx.callTool("bash_bg", { command, yield_ms: 5000 });
 	ctx.trace.observations.push({
 		type: "deny",
 		files: snapshot(ctx),
 		approval: deny.details?.approval ?? null,
+		state: deny.details?.state ?? null,
 		exitCode: deny.details?.exitCode ?? null,
 	});
 	resetTree(ctx.workspace);
-	const approve = await ctx.callTool("bash", { command, approval: "approve" });
+	ctx.trace.approvalDecision = "approve";
+	const approve = await ctx.callTool("bash_bg", { command, yield_ms: 5000 });
 	ctx.trace.observations.push({
 		type: "approve",
 		files: snapshot(ctx),
 		approval: approve.details?.approval ?? null,
+		state: approve.details?.state ?? null,
 		exitCode: approve.details?.exitCode ?? null,
 	});
 }

@@ -4,11 +4,8 @@
   "headless": false,
   "clock": "real",
   "timeoutMs": 30000,
-  "expectedFail": {
-    "deterministic": "git push --force updates the remote immediately. pi does not ask for approval before the new commit is published."
-  },
   "toolPolicy": {
-    "requireTools": ["bash"],
+    "requireTools": ["bash_bg"],
     "forbidTools": ["supervisor_start"]
   }
 }

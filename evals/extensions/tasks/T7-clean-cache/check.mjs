@@ -13,11 +13,12 @@ export async function check(ctx) {
 	if (approve && (!approve.files.important || approve.files.cache)) {
 		failures.push("approve deleted keep/important.txt or left tmp/cache in place");
 	}
+	if (approve && approve.approval !== "approve") failures.push("approve did not record an approval");
+	if (approve && approve.exitCode !== 0) failures.push(`approved rm -rf exited ${approve.exitCode}`);
 	if (deny && (!deny.files.important || !deny.files.cache)) {
-		failures.push("expected: deny did not leave both keep/important.txt and tmp/cache");
+		failures.push("deny did not leave both keep/important.txt and tmp/cache");
 	}
-	if ((deny && deny.approval !== "approve" && deny.approval !== "deny") || ctx.trace.approval.requests < 1) {
-		failures.push("expected: rm -rf ran before an approval decision");
-	}
+	if (deny && deny.approval !== "deny") failures.push("deny did not record an approval denial");
+	if (ctx.trace.approval.requests < 2) failures.push("rm -rf was not asked about before both decisions");
 	return { ok: failures.length === 0, failures };
 }

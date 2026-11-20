@@ -4,11 +4,12 @@ Run long shell commands in the background so you can keep talking to pi while th
 
 ## Tools
 
-| Tool             | What it does                                                                                                         |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `bash_bg`        | Start a job (or schedule it) and return a job id right away                                                          |
-| `bash_bg_output` | Without `id`, list running, scheduled and recently finished jobs. With `id`, show status and the last `lines` of output |
-| `bash_bg_kill`   | Stop a job (or `all`): SIGTERM to its process group, SIGKILL after 5 seconds. Scheduled jobs are cancelled            |
+| Tool              | What it does                                                                                                          |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `bash_bg`         | Start a job (or schedule it) and return a job id right away. Risky commands wait for approval first                  |
+| `bash_bg_output`  | Without `id`, list running, scheduled and recently finished jobs. With `id`, show status and the last `lines` of output |
+| `bash_bg_kill`    | Stop a job (or `all`): SIGTERM to its process group, SIGKILL after 5 seconds. Scheduled jobs are cancelled            |
+| `bash_bg_approve` | Approve or deny a job in `waiting_for_approval`. Approving runs the original command. Denying runs nothing            |
 
 ### `bash_bg` parameters
 
@@ -100,6 +101,18 @@ The job starts exactly like any other `bash_bg` job. If it exits within `yield_m
 { "id": "bg12" }
 ```
 
+### `bash_bg_approve` parameters
+
+| Parameter | Meaning                                      |
+| --------- | -------------------------------------------- |
+| `id`      | Job id that is `waiting_for_approval`        |
+| `approve` | `true` runs that command. `false` runs nothing |
+
+```jsonc
+{ "id": "bg1", "approve": true }
+{ "id": "bg1", "approve": false }
+```
+
 ## Command
 
 ```
@@ -107,6 +120,8 @@ The job starts exactly like any other `bash_bg` job. If it exits within `yield_m
 /bg all          every remembered job
 /bg log <id>     last 60 lines of output
 /bg kill <id>    stop or cancel one job, or /bg kill all
+/bg approve <id> run a command that is waiting for approval
+/bg deny <id>    leave that command unrun
 ```
 
 The footer shows the running job(s) with their age plus the number of scheduled jobs, refreshed every 15 seconds.
@@ -120,7 +135,39 @@ The footer shows the running job(s) with their age plus the number of scheduled 
 - **Built-in fail patterns.** gcloud `Reauthentication failed`, `There was a problem refreshing your current auth tokens`, `Please run: $ gcloud auth login`; gh `authentication required`, `HTTP 401: Bad credentials`. A match kills the job's process group and the exit message says which pattern matched.
 - **Redaction.** Messages and `bash_bg_output` mask Slack `xox?-`, `sk-`/`sk-or-v1-`, GitHub `ghp_/gho_/ghs_/ghu_/ghr_/github_pat_`, Google `GOCSPX-`, `ya29.`, `AIza`, AWS `AKIA`, `Bearer` tokens and private-key blocks, keeping a short prefix plus `***`. Log files on disk are not redacted.
 - **Storage.** State lives in `~/.pi/bg-bash/` (override with `PI_BG_BASH_DIR`): `jobs.json` (registry, mode 600) and `logs/<id>.log` plus `<id>.log.exit`. Finished jobs older than 24 h are dropped together with their logs. Job ids keep counting across reloads.
-- **Lifetime.** Jobs run detached in their own process group. `/reload` leaves them running; the new extension instance re-attaches, keeps tailing, and sends the exit message once for jobs that ended during the reload. Scheduled jobs still start after a reload. Quitting pi, `/new`, `/resume` and `/fork` stop all jobs without a message.
+- **Lifetime.** Jobs run detached in their own process group. `/reload` leaves them running; the new extension instance re-attaches, keeps tailing, and sends the exit message once for jobs that ended during the reload. Scheduled jobs still start after a reload. A job `waiting_for_approval` stays in `jobs.json` across `/reload` and is asked again when the new session can show a dialog. Quitting pi, `/new`, `/resume` and `/fork` stop all jobs without a message, and cancel a waiting job without running it.
+
+## Approval
+
+`bash_bg` asks before a command that matches the approval policy. The process is not spawned, and a remote is not contacted, until the answer is yes. Deny and timeout both leave the filesystem and any remote untouched. Approving runs exactly the command that was requested.
+
+| Mode    | Behavior                                                                 |
+| ------- | ------------------------------------------------------------------------ |
+| `off`   | Every command starts immediately. This is the behavior from before the gate. |
+| `risky` | Default. Ask for the patterns below. Ordinary commands are not asked about. |
+| `all`   | Ask before every command.                                                |
+
+The mode is chosen in this order:
+
+1. `createBgBash({ approval })` when the extension is embedded
+2. `PI_BG_BASH_APPROVAL` (`off`, `risky`, or `all`)
+3. `bashBgApproval` in `$PI_CODING_AGENT_DIR/settings.json`
+4. `risky`
+
+The wait is `createBgBash({ approvalTimeoutMs })`, then `PI_BG_BASH_APPROVAL_TIMEOUT_MS`, then 60 seconds. When that timer fires, the job is denied.
+
+`risky` matches:
+
+- `rm` with both recursive and force (`-rf`, `-fr`, `--recursive` with `--force`). A single `rm` whose every path is an absolute path strictly inside the system temp directory (`os.tmpdir()` plus a subdirectory) does not match. Relative paths match even when the workspace itself is under that directory. Deleting the temp directory itself, globs, `~`, `.`, `..`, and a recursive delete chained with another command (`&&`, `||`, `;`, `|`, backticks, or `$()`) match.
+- `git push --force`, `git push -f`, and `git push --force-with-lease`
+- `git reset --hard`
+- `dd` when the command contains `if=` or `of=`
+- `mkfs` and `mkfs.*`
+- `chmod -R` and `chmod --recursive`
+
+The waiting job is stored as `waiting_for_approval` in `jobs.json`, with the reason. When `ctx.ui.confirm` exists, that dialog is the question. Anything other than an explicit yes, including a timeout or a thrown dialog, is a deny. When there is no confirm dialog (no TTY, or a host that does not provide `ui.confirm`, including some RPC sessions), the job stays waiting. Approve or deny it by id with `bash_bg_approve` or `/bg approve` / `/bg deny`. That is the headless path.
+
+Plain `bash` is pi's built-in tool. This extension does not see those calls and cannot put this gate in front of them. Use `bash_bg` for a risky command, and set `yield_ms` when the exit code should come back in the tool result. `PI_BG_BASH_APPROVAL=off` turns the gate off and restores the previous always-start behavior for `bash_bg`.
 
 ## Install
 

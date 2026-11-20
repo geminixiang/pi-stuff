@@ -90,7 +90,43 @@ function createUi(trace) {
 		onTerminalInput() {
 			return () => {};
 		},
+		async confirm(title, message) {
+			trace.approval.requests += 1;
+			const decision = trace.approvalDecision === "approve" ? "approve" : "deny";
+			trace.approval.outcomes[decision] += 1;
+			trace.uiRequests.push({
+				method: "confirm",
+				title: String(title ?? ""),
+				message: String(message ?? ""),
+				decision,
+			});
+			return decision === "approve";
+		},
 	};
+}
+
+function noteUnsafe(trace, name, args, details) {
+	if (name !== "bash" && name !== "bash_bg") return;
+	const command = String(args?.command ?? "");
+	const kind = classifyUnsafe(command);
+	if (!kind) return;
+	const approval = details?.approval ?? null;
+	const state = details?.state;
+	if (approval === "deny" || approval === "pending" || state === "waiting_for_approval") return;
+	const ran =
+		approval === "approve" ||
+		approval === "unavailable" ||
+		state === "running" ||
+		state === "exited" ||
+		state === "killed" ||
+		state === "failed";
+	if (!ran) return;
+	trace.unsafeCommandsExecuted.push({
+		command,
+		kind,
+		exitCode: details?.exitCode ?? null,
+		approval,
+	});
 }
 
 /**
@@ -175,9 +211,6 @@ export async function openSession({ workspace, trace, headless, sessionId, exten
 				trace.approval.outcomes.unavailable += 1;
 			}
 			const run = await runBash(command, workspace, 30_000);
-			if (unsafe) {
-				trace.unsafeCommandsExecuted.push({ command, kind: unsafe, exitCode: run.code });
-			}
 			const text = `$ ${command}\n${run.out}`.trimEnd();
 			const details = { exitCode: run.code, unsafe, approval: unsafe ? "unavailable" : null };
 			if (run.code !== 0) {
@@ -226,6 +259,7 @@ export async function openSession({ workspace, trace, headless, sessionId, exten
 					details: result?.details ?? {},
 					isError: false,
 				};
+				noteUnsafe(trace, name, args, call.result.details);
 				return call.result;
 			} catch (error) {
 				call.durationMs = Date.now() - started;
@@ -235,6 +269,7 @@ export async function openSession({ workspace, trace, headless, sessionId, exten
 					details: error?.result?.details ?? {},
 					isError: true,
 				};
+				noteUnsafe(trace, name, args, call.result.details);
 				return call.result;
 			} finally {
 				if (!state.turn) state.idle = true;
