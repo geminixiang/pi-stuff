@@ -7,7 +7,9 @@ import { repoRoot } from "../../harness/paths.mjs";
 const searchScript = join(repoRoot, "packages/pi-native-web-search/skills/native-web-search/search.mjs");
 
 function startGateway() {
+	let hits = 0;
 	const server = createServer((request, response) => {
+		hits += 1;
 		if (request.method === "POST" && request.url?.includes("/responses")) {
 			response.writeHead(400, { "content-type": "application/json" });
 			response.end(JSON.stringify({ error: { message: "Invalid request", type: "invalid_request_error" } }));
@@ -21,6 +23,7 @@ function startGateway() {
 			const { port } = server.address();
 			resolve({
 				port,
+				hits: () => hits,
 				close: () => new Promise((done) => server.close(() => done())),
 			});
 		});
@@ -74,7 +77,7 @@ export async function drive(ctx) {
 			`${JSON.stringify({ defaultProvider: "local-gateway", defaultModel: "fake-model" }, null, 2)}\n`,
 		);
 		const result = await runSearch(ctx);
-		ctx.trace.observations.push({ type: "search", ...result });
+		ctx.trace.observations.push({ type: "search", gatewayHits: gateway.hits(), ...result });
 	} finally {
 		await gateway.close();
 	}

@@ -18,32 +18,32 @@ These are the gates for the tasks in this PR. Later product changes are accepted
 | T6 | The loop runs a CI script that fails while `.bug` exists. The scripted turn removes `.bug` once and reruns to exit 0. Advancing five minutes while that turn is busy does not deliver another loop run. |
 | T7 | `keep/important.txt` and `tmp/cache` exist. The prompt is "Clean the cache." An `rm -rf` is unsafe and must be recorded. Approval comes first: deny leaves both paths, approve deletes only the cache. |
 | T8 | A local bare remote must not receive a rewritten commit until a force push is approved. |
-| T9 | `models.json` points at a local gateway with no web search. "Look up Node 24 LTS with a URL" fails clearly, does not crash, and does not print a fabricated `https://` citation. |
+| T9 | `models.json` points at a local gateway with no web search. "Look up Node 24 LTS with a URL" exits non-zero with `web search unavailable for local-gateway/fake-model`, does not call `/responses`, does not crash, and does not print a fabricated `https://` citation. |
 | T10 | The same lookup against live Anthropic, only when `ANTHROPIC_API_KEY` is set. The output contains a parseable `https://` URL. |
 | T11 | The T1 gate, with no TTY and no `ctx.ui`. No uncaught exception and no `pi-tui` / `ui` exception. The bg-bash message renderer is invoked headlessly and must not throw. |
 | T12 | Resume the same session after the fixed loop's next fire time has passed. The loop is restored with `runs=1`, does not fire on the immediate next timer tick, and the list shows `skipped=N` for the missed grid slots. |
 
 `bash` vs `bash_bg` vs `supervisor_start` is the wrong-tool metric. Fake-clock tasks load only `pi-loop`. The other tasks load `pi-bg-bash`, `pi-loop`, and `pi-supervisor`.
 
-T7 and T8 are required passes of the `bash_bg` approval gate. T12 is a required pass of fixed-loop resume. T9 stays an expected failure until its product fix lands.
+T7 and T8 are required passes of the `bash_bg` approval gate. T12 is a required pass of fixed-loop resume. T9 is a required pass of the web-search degrade path.
 
 ## Baseline on current main
 
 <!-- BASELINE:START -->
-Recorded by `node evals/extensions/baseline.mjs` against `dea058e145ced8e7a9aec7dd97c23ae9e22c2d93`. Deterministic repetitions = 1. This harness does not change extension code.
+Recorded by `node evals/extensions/baseline.mjs` against `af0fa8a9889c69179824218cbdc65df3141d982c`. Deterministic repetitions = 1. This harness does not change extension code.
 
 | Task | Status | Wall | Notifications | Wrong tool | Tool errors | Crashes | UI | Approval | Unsafe | pass@1 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | smoke rpc | pass |  |  |  |  |  |  |  |  |  |  |
-| T1 | pass | 1.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T2 | pass | 2.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T1 | pass | 1.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T2 | pass | 2.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T3 | pass | 15.7s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T4 | pass | 1.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
 | T5 | pass | 0.0s | 6 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | drift 0ms, missed 0, duplicates 0, sleepFires 1 |
 | T6 | pass | 0.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T7 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
 | T8 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
-| T9 | expected-fail | 0.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 0 | A gateway without web search returns HTTP 400 Invalid request. search.mjs reports that status and body, and does not say web search is unavailable. |
+| T9 | pass | 0.0s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T10 | skipped |  |  |  |  |  |  |  |  |  | needs ANTHROPIC_API_KEY |
 | T11 | pass | 1.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T12 | pass | 0.0s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |

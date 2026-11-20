@@ -6,6 +6,7 @@ import {
 	decodeJwtAccountId,
 	extractEventData,
 	getCachedOAuthAccess,
+	hasNativeWebSearch,
 	normalizeProvider,
 	parseArgs,
 	parseExpiryTimestamp,
@@ -16,6 +17,9 @@ import {
 	resolveCodexUrl,
 	resolveConfigValue,
 	resolveResponsesUrl,
+	responsesLackWebSearch,
+	runResponsesSearch,
+	webSearchUnavailableMessage,
 } from "../skills/native-web-search/search.mjs";
 
 test("parseArgs parses positional query and options", () => {
@@ -115,6 +119,72 @@ test("model selection prefers fast known models", () => {
 	};
 	assert.equal(pickFastModel("openai-codex", undefined, piAi).baseUrl, "fast");
 	assert.equal(pickFastModel("openai-codex", "custom", piAi).id, "custom");
+});
+
+test("local and custom providers have no native web search", () => {
+	assert.equal(hasNativeWebSearch("anthropic"), true);
+	assert.equal(hasNativeWebSearch("openai-codex"), true);
+	assert.equal(hasNativeWebSearch("openai-api", "https://api.openai.com/v1"), true);
+	assert.equal(hasNativeWebSearch("local-gateway", "http://127.0.0.1:9/v1"), false);
+	assert.equal(hasNativeWebSearch("llama.cpp", "http://localhost:8080/v1"), false);
+	assert.equal(hasNativeWebSearch("custom-gateway", "https://example.test/v1"), false);
+	const message = webSearchUnavailableMessage("local-gateway", "fake-model");
+	assert.match(message, /^web search unavailable for local-gateway\/fake-model\. /);
+	assert.match(message, /openai-codex/);
+	assert.match(message, /anthropic/);
+	assert.equal(message.includes("https://"), false);
+});
+
+test("Responses 404 and a web_search 400 become the unavailable message", async () => {
+	assert.equal(responsesLackWebSearch(404, "not found"), true);
+	assert.equal(responsesLackWebSearch(400, "web_search is not supported"), true);
+	assert.equal(responsesLackWebSearch(400, "Invalid request"), false);
+	assert.equal(responsesLackWebSearch(401, "web_search"), false);
+	const original = globalThis.fetch;
+	globalThis.fetch = async () => new Response("not found", { status: 404 });
+	try {
+		await assert.rejects(
+			() =>
+				runResponsesSearch({
+					provider: "openai-api",
+					model: "gpt-5.4",
+					apiKey: "test",
+					query: "Node 24",
+					purpose: "cite a URL",
+					timeoutMs: 1000,
+					baseUrl: "https://api.openai.com/v1",
+				}),
+			/web search unavailable for openai-api\/gpt-5\.4/,
+		);
+	} finally {
+		globalThis.fetch = original;
+	}
+});
+
+test("a generic Responses 400 stays a request failure", async () => {
+	const original = globalThis.fetch;
+	globalThis.fetch = async () =>
+		new Response(JSON.stringify({ error: { message: "Invalid request", type: "invalid_request_error" } }), {
+			status: 400,
+			headers: { "content-type": "application/json" },
+		});
+	try {
+		await assert.rejects(
+			() =>
+				runResponsesSearch({
+					provider: "openai-api",
+					model: "gpt-5.4",
+					apiKey: "test",
+					query: "Node 24",
+					purpose: "cite a URL",
+					timeoutMs: 1000,
+					baseUrl: "https://api.openai.com/v1",
+				}),
+			/Responses request failed \(400\)/,
+		);
+	} finally {
+		globalThis.fetch = original;
+	}
 });
 
 test("request helpers construct endpoints, headers, and parse SSE data", () => {
