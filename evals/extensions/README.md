@@ -30,19 +30,19 @@ T7 and T8 are required passes of the `bash_bg` approval gate. T9 and T12 stay ex
 ## Baseline on current main
 
 <!-- BASELINE:START -->
-Recorded by `node evals/extensions/baseline.mjs` against `93e68329e18f39c041434ea50d089ef8b84f0e70`. Deterministic repetitions = 1. This harness does not change extension code.
+Recorded by `node evals/extensions/baseline.mjs` against `398c1fa60b019c7048e6aa55ecf366598989c62e`. Deterministic repetitions = 1. This harness does not change extension code.
 
 | Task | Status | Wall | Notifications | Wrong tool | Tool errors | Crashes | UI | Approval | Unsafe | pass@1 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | smoke rpc | pass |  |  |  |  |  |  |  |  |  |  |
-| T1 | pass | 1.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T1 | pass | 1.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T2 | pass | 2.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T3 | pass | 15.7s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T4 | pass | 1.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
+| T3 | pass | 15.8s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T4 | pass | 1.2s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
 | T5 | pass | 0.0s | 6 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | drift 0ms, missed 0, duplicates 0, sleepFires 1 |
 | T6 | pass | 0.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T7 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
-| T8 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
+| T8 | pass | 0.4s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
 | T9 | expected-fail | 0.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 0 | A gateway without web search returns HTTP 400 Invalid request. search.mjs reports that status and body, and does not say web search is unavailable. |
 | T10 | skipped |  |  |  |  |  |  |  |  |  | needs ANTHROPIC_API_KEY |
 | T11 | pass | 1.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
