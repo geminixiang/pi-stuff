@@ -1,0 +1,12 @@
+{
+  "id": "T11",
+  "title": "T1 with no TTY and no ui",
+  "headless": true,
+  "clock": "real",
+  "timeoutMs": 120000,
+  "toolPolicy": {
+    "requireTools": ["bash_bg"],
+    "forbidTools": ["supervisor_start"],
+    "bashWrongIfMatches": ["sleep", "while", "server.mjs", "test.mjs"]
+  }
+}
