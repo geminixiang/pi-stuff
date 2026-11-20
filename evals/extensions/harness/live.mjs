@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { findPi, rpcLaunchArgs } from "./extensions.mjs";
@@ -11,6 +11,38 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function promptText(task) {
 	return readFileSync(join(task.dir, "prompt.md"), "utf8").trim();
+}
+
+async function httpUp(port) {
+	try {
+		const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1_000) });
+		return response.status === 200 || response.status === 503;
+	} catch {
+		return false;
+	}
+}
+
+async function hardKillHost(client, ctx) {
+	const port = Number(readFileSync(join(ctx.workspace, "port.txt"), "utf8").trim());
+	const build = readJobs(ctx.paths.bgDir).jobs.find((job) => String(job.command ?? "").includes("build.mjs"));
+	client.proc.kill("SIGKILL");
+	await sleep(400);
+	let taskdPid = 0;
+	try {
+		taskdPid = Number(readFileSync(join(ctx.paths.taskdHome, "taskd.sock.lock"), "utf8").trim());
+	} catch {
+		taskdPid = 0;
+	}
+	ctx.trace.observations.push({
+		type: "hard-kill",
+		taskdAlive: isAlive(taskdPid),
+		taskdPid,
+		portListening: await httpUp(port),
+		port,
+		buildAlive: isAlive(build?.pid),
+		buildPid: build?.pid ?? null,
+		hostKilled: true,
+	});
 }
 
 function hasExit(trace) {
@@ -70,7 +102,14 @@ export async function runLive(task, { piBin, model, provider }) {
 		await client.request({ type: "prompt", message: promptText(task) }, 30_000);
 		const idle = { deadline, idleMs: 400 };
 		await waitForIdle(client, { ...idle, ready: () => client.settled });
-		if (task.live?.reloadWhileRunning) {
+		if (task.live?.hardKill) {
+			await waitForIdle(client, {
+				deadline,
+				idleMs: 400,
+				ready: () => existsSync(join(paths.workspace, "build-ok")),
+			});
+			await hardKillHost(client, ctx);
+		} else if (task.live?.reloadWhileRunning) {
 			await reloadLive(client, trace, paths.bgDir);
 			await waitForIdle(client, { ...idle, idleMs: 800, ready: () => client.settled && hasExit(trace) });
 		} else {

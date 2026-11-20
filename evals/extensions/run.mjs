@@ -60,6 +60,11 @@ function printRuns(runs) {
 			`${run.id}\t${run.status}\trep=${run.repetition}\t${seconds}s\tnotifications=${run.notificationCount}\twrongTool=${run.wrongTool}\ttoolErrors=${run.toolErrors}\tcrashes=${run.crashes.length}\tui=${run.uiExceptions.length}`,
 		);
 		for (const failure of run.failures) console.log(`  - ${failure}`);
+		if (run.loopGrid) {
+			console.log(
+				`  grid drift=${run.loopGrid.driftMs}ms missed=${run.loopGrid.missed} duplicates=${run.loopGrid.duplicates} sleepFires=${run.loopGrid.sleepFires}`,
+			);
+		}
 	}
 }
 
@@ -84,9 +89,10 @@ try {
 			provider: opts.provider ?? null,
 			skipped: false,
 			skipReason: null,
-			smoke: null,
-			runs: [],
-			passAt: {},
+		smoke: null,
+		runs: [],
+		skippedTasks: [],
+		passAt: {},
 		};
 
 		if (!opts.skipSmoke) {
@@ -101,6 +107,13 @@ try {
 		} else {
 			const tasks = selectTasks(opts);
 			for (const task of tasks) {
+				if (opts.mode === "live" && task.clock === "fake") {
+					summary.skippedTasks.push({
+						id: task.id,
+						reason: "fake-clock grid tasks run only in deterministic mode",
+					});
+					continue;
+				}
 				for (let repetition = 1; repetition <= opts.repetitions; repetition++) {
 					try {
 						const result =

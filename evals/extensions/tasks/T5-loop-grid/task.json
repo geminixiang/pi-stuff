@@ -1,0 +1,12 @@
+{
+  "id": "T5",
+  "title": "One-minute loop grid under a fake clock",
+  "headless": false,
+  "clock": "fake",
+  "extensions": ["pi-loop"],
+  "timeoutMs": 30000,
+  "toolPolicy": {
+    "requireTools": ["loop_create"],
+    "forbidTools": ["bash_bg", "supervisor_start"]
+  }
+}

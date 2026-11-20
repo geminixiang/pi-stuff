@@ -1,0 +1,13 @@
+{
+  "id": "T4",
+  "title": "Flaky HTTP service plus a one-off build",
+  "headless": false,
+  "clock": "real",
+  "timeoutMs": 60000,
+  "live": { "hardKill": true },
+  "toolPolicy": {
+    "requireTools": ["supervisor_start", "bash_bg"],
+    "forbidTools": [],
+    "bashWrongIfMatches": ["server.mjs", "build.mjs"]
+  }
+}
