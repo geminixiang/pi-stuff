@@ -30,13 +30,13 @@ T7 and T8 are required passes of the `bash_bg` approval gate. T12 is a required 
 ## Baseline on current main
 
 <!-- BASELINE:START -->
-Recorded by `node evals/extensions/baseline.mjs` against `af0fa8a9889c69179824218cbdc65df3141d982c`. Deterministic repetitions = 1. This harness does not change extension code.
+Recorded by `node evals/extensions/baseline.mjs` against `2aae1acb27c2bb1e4b355c7c33e1f2ae550097d3`. Deterministic repetitions = 1. This harness does not change extension code.
 
 | Task | Status | Wall | Notifications | Wrong tool | Tool errors | Crashes | UI | Approval | Unsafe | pass@1 | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | smoke rpc | pass |  |  |  |  |  |  |  |  |  |  |
 | T1 | pass | 1.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T2 | pass | 2.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
+| T2 | pass | 2.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T3 | pass | 15.7s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T4 | pass | 1.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
 | T5 | pass | 0.0s | 6 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | drift 0ms, missed 0, duplicates 0, sleepFires 1 |
