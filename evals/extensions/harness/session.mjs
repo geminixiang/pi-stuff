@@ -13,26 +13,32 @@ function stamped(path) {
 	return `${pathToFileURL(path).href}?eval=${stamp}`;
 }
 
+export const PRODUCT_EXTENSIONS = ["pi-bg-bash", "pi-loop", "pi-supervisor"];
+
 /**
  * Load the product extensions into a fresh module instance.
  * pi-supervisor captures PI_TASKD_HOME when the module is evaluated, so each
  * session imports it with a cache-busting query after the sandbox env is set.
+ * Fake-clock tasks pass a subset so a mocked timer does not stall taskd startup.
  */
-export async function loadProductExtensions(pi) {
-	const [bg, loop, supervisor] = await Promise.all([
-		import(stamped(bgPath)),
-		import(stamped(loopPath)),
-		import(stamped(supervisorPath)),
-	]);
-	const loadBg = bg.default ?? bg.createBgBash?.();
-	const loadLoop = loop.default;
-	const loadSupervisor = supervisor.default;
-	if (typeof loadBg !== "function" || typeof loadLoop !== "function" || typeof loadSupervisor !== "function") {
-		throw new Error("product extension module did not export a loader function");
+export async function loadProductExtensions(pi, names = PRODUCT_EXTENSIONS) {
+	const wanted = new Set(names);
+	if (wanted.has("pi-bg-bash")) {
+		const bg = await import(stamped(bgPath));
+		const loadBg = bg.default ?? bg.createBgBash?.();
+		if (typeof loadBg !== "function") throw new Error("pi-bg-bash did not export a loader");
+		loadBg(pi);
 	}
-	loadBg(pi);
-	loadLoop(pi);
-	loadSupervisor(pi);
+	if (wanted.has("pi-loop")) {
+		const loop = await import(stamped(loopPath));
+		if (typeof loop.default !== "function") throw new Error("pi-loop did not export a loader");
+		loop.default(pi);
+	}
+	if (wanted.has("pi-supervisor")) {
+		const supervisor = await import(stamped(supervisorPath));
+		if (typeof supervisor.default !== "function") throw new Error("pi-supervisor did not export a loader");
+		supervisor.default(pi);
+	}
 }
 
 function runBash(command, cwd, timeoutMs) {
@@ -91,20 +97,21 @@ function createUi(trace) {
  * packages/pi-loop/test. Several extensions can register; handlers are a list.
  * `bash` is a stand-in for pi's built-in tool so a scripted drive can misuse it.
  */
-export async function openSession({ workspace, trace, headless, sessionId }) {
+export async function openSession({ workspace, trace, headless, sessionId, extensions, entries }) {
 	const hooks = new Map();
 	const tools = {};
 	const commands = {};
 	const renderers = {};
+	const branch = entries ?? [];
 	const ui = headless ? undefined : createUi(trace);
-	const state = { idle: true };
+	const state = { idle: true, turn: false };
 	const ctx = {
 		cwd: workspace,
 		hasUI: Boolean(ui),
 		mode: headless ? "rpc" : "tui",
 		sessionManager: {
 			getSessionId: () => sessionId,
-			getBranch: () => [],
+			getBranch: () => branch,
 		},
 		isIdle: () => state.idle,
 		hasPendingMessages: () => false,
@@ -134,18 +141,26 @@ export async function openSession({ workspace, trace, headless, sessionId }) {
 			});
 		},
 		sendUserMessage(message, opts) {
+			// A delivered loop prompt starts a turn. The agent stays busy until endTurn,
+			// matching the pi-loop tests, so a fake-clock jump cannot re-enter mid-turn.
+			state.turn = true;
+			state.idle = false;
 			trace.notifications.push({
 				source: "sendUserMessage",
 				text: typeof message === "string" ? message : messageText(message),
 				details: {},
 				opts: opts ?? {},
+				at: Date.now(),
 			});
 		},
-		appendEntry() {},
+		appendEntry(customType, data) {
+			branch.push({ type: "custom", customType, data: structuredClone(data) });
+		},
 	};
 
-	await loadProductExtensions(pi);
-	if (typeof tools.bash_bg?.execute !== "function") {
+	await loadProductExtensions(pi, extensions);
+	const loadBg = !extensions || extensions.includes("pi-bg-bash");
+	if (loadBg && typeof tools.bash_bg?.execute !== "function") {
 		throw new Error("bash_bg was not registered; the product extension did not load");
 	}
 
@@ -212,8 +227,13 @@ export async function openSession({ workspace, trace, headless, sessionId }) {
 				};
 				return call.result;
 			} finally {
-				state.idle = true;
+				if (!state.turn) state.idle = true;
 			}
+		},
+		async endTurn() {
+			state.turn = false;
+			state.idle = true;
+			await emit("agent_end", {});
 		},
 		probeRenderer() {
 			const theme = {

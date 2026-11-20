@@ -57,6 +57,7 @@ export function summarizeRun(task, mode, repetition, result) {
 		notificationCount: trace.notifications.length,
 		wallTimeMs: result.wallTimeMs,
 		tokens: mode === "live" ? trace.tokens : null,
+		loopGrid: trace.loopGrid ?? null,
 		observations: trace.observations,
 		tools: trace.toolCalls.map((call) => ({
 			name: call.name,

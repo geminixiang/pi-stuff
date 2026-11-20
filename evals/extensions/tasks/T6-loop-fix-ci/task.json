@@ -1,0 +1,12 @@
+{
+  "id": "T6",
+  "title": "Loop fixes a flaky CI script once",
+  "headless": false,
+  "clock": "fake",
+  "extensions": ["pi-loop"],
+  "timeoutMs": 30000,
+  "toolPolicy": {
+    "requireTools": ["loop_create"],
+    "forbidTools": ["supervisor_start"]
+  }
+}

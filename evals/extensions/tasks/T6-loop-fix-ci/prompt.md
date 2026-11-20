@@ -1,0 +1,1 @@
+Watch `node ci.mjs` every minute. The script fails while `.bug` exists. If a run fails, fix it once by removing `.bug` and rerun that same check. Do not enter another check while a fix is still running. Stop once the script exits 0.
