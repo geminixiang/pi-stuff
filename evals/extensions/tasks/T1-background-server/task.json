@@ -1,0 +1,12 @@
+{
+  "id": "T1",
+  "title": "Background server and slow tests",
+  "headless": false,
+  "clock": "real",
+  "timeoutMs": 120000,
+  "toolPolicy": {
+    "requireTools": ["bash_bg"],
+    "forbidTools": ["supervisor_start"],
+    "bashWrongIfMatches": ["sleep", "while", "server.mjs", "test.mjs"]
+  }
+}

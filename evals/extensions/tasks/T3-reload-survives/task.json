@@ -1,0 +1,16 @@
+{
+  "id": "T3",
+  "title": "Log-writing job survives reload",
+  "headless": false,
+  "clock": "real",
+  "timeoutMs": 180000,
+  "live": {
+    "reloadWhileRunning": true,
+    "followUp": "The logger has finished. Run the command true in the background exactly once, then stop."
+  },
+  "toolPolicy": {
+    "requireTools": ["bash_bg"],
+    "forbidTools": ["supervisor_start"],
+    "bashWrongIfMatches": ["sleep", "while", "job.log"]
+  }
+}

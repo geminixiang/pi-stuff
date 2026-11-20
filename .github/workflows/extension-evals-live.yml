@@ -1,0 +1,51 @@
+name: Extension evals (live)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "Comma-separated task ids (empty runs T1, T2, T3, T11)"
+        required: false
+        default: ""
+      repetitions:
+        description: "Repetitions per task (pass@k)"
+        required: false
+        default: "3"
+      model:
+        description: "pi --model value, for example anthropic/claude-sonnet-4-5"
+        required: false
+        default: ""
+      provider:
+        description: "pi --provider (optional when the model includes a provider)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Live extension evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: >-
+          node evals/extensions/run.mjs --mode live
+          --repetitions "${{ inputs.repetitions }}"
+          --task "${{ inputs.tasks }}"
+          --model "${{ inputs.model }}"
+          --provider "${{ inputs.provider }}"

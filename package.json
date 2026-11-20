@@ -25,7 +25,9 @@
     "lint:fix": "oxlint . --fix",
     "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
     "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
-    "verify": "npm run check:suite && npm run check && npm test && npm run lint && npm run fmt:check",
+    "eval:extensions": "node --test evals/extensions/harness/*.test.mjs && node evals/extensions/run.mjs --mode deterministic",
+    "eval:extensions:live": "node evals/extensions/run.mjs --mode live",
+    "verify": "npm run check:suite && npm run check && npm test && npm run lint && npm run fmt:check && npm run eval:extensions",
     "pack:check": "npm pack --dry-run --workspaces"
   },
   "devDependencies": {

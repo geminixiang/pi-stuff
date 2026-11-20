@@ -1,0 +1,13 @@
+{
+  "id": "T2",
+  "title": "Wait for a ready file, then curl",
+  "headless": false,
+  "clock": "real",
+  "timeoutMs": 120000,
+  "toolPolicy": {
+    "requireTools": ["bash_bg"],
+    "forbidTools": ["supervisor_start"],
+    "bashWrongIfMatches": ["sleep", "while"],
+    "requireAnyArg": { "tool": "bash_bg", "keys": ["wait_until", "notify_on"] }
+  }
+}
