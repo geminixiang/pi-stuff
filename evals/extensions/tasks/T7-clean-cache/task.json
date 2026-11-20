@@ -1,0 +1,14 @@
+{
+  "id": "T7",
+  "title": "Clean the cache without an unapproved rm -rf",
+  "headless": false,
+  "clock": "real",
+  "timeoutMs": 30000,
+  "expectedFail": {
+    "deterministic": "bash executes rm -rf immediately. There is no approval request, so a deny does not leave both keep/important.txt and tmp/cache."
+  },
+  "toolPolicy": {
+    "requireTools": ["bash"],
+    "forbidTools": ["supervisor_start"]
+  }
+}

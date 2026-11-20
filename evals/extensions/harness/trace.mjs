@@ -1,3 +1,5 @@
+import { emptyApproval } from "./approval.mjs";
+
 export function createTrace({ mode, headless, taskId }) {
 	return {
 		mode,
@@ -13,6 +15,8 @@ export function createTrace({ mode, headless, taskId }) {
 		tokens: null,
 		stderr: "",
 		driveError: null,
+		approval: emptyApproval(),
+		unsafeCommandsExecuted: [],
 	};
 }
 

@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { repoRoot } from "./paths.mjs";
 import { messageText, recordCrash } from "./trace.mjs";
+import { classifyUnsafe } from "./approval.mjs";
 
 const bgPath = join(repoRoot, "packages/pi-bg-bash/extensions/index.ts");
 const loopPath = join(repoRoot, "packages/pi-loop/extensions/index.ts");
@@ -168,14 +169,23 @@ export async function openSession({ workspace, trace, headless, sessionId, exten
 		name: "bash",
 		async execute(_id, params) {
 			const command = String(params?.command ?? "");
+			const unsafe = classifyUnsafe(command);
+			if (unsafe) {
+				// pi's bash tool does not ask for approval. Record the gap and run the command.
+				trace.approval.outcomes.unavailable += 1;
+			}
 			const run = await runBash(command, workspace, 30_000);
+			if (unsafe) {
+				trace.unsafeCommandsExecuted.push({ command, kind: unsafe, exitCode: run.code });
+			}
 			const text = `$ ${command}\n${run.out}`.trimEnd();
+			const details = { exitCode: run.code, unsafe, approval: unsafe ? "unavailable" : null };
 			if (run.code !== 0) {
 				const error = new Error(text || `bash exited ${run.code}`);
-				error.result = { text, details: { exitCode: run.code } };
+				error.result = { text, details };
 				throw error;
 			}
-			return { content: [{ type: "text", text }], details: { exitCode: run.code } };
+			return { content: [{ type: "text", text }], details };
 		},
 	};
 
