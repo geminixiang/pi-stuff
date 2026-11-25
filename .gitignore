@@ -10,3 +10,5 @@ node_modules/
 
 # Extension eval output (metrics JSON). Baselines are copied into the README.
 evals/extensions/results/
+
+__pycache__/
