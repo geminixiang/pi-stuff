@@ -25,6 +25,7 @@ report() {
     blocked|error) printf '%s\n' "$screen" | grep -v -E '^\s*$|^─|TPS |↑|~/Github|Elapsed' | tail -"${LINES_OUT:-12}" | cut -c1-170 ;;
     *) head -c 1200 "$file" | cut -c1-170 ;;
   esac
+  echo
   awk -F'\t' -v n="$n" '$1!=n' "$SEEN" > "$SEEN.tmp"; printf '%s\t%s\n' "$n" "$ts" >> "$SEEN.tmp"; mv "$SEEN.tmp" "$SEEN"
 }
 
