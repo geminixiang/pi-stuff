@@ -36,6 +36,9 @@ pending() {
     rec=$(rex block call -s "$S" -b "$b" program_status 2>/dev/null | jq -r '.records[0]|"\(.state)\t\(.updated_at)"' 2>/dev/null) || continue
     st=${rec%%$'\t'*}; ts=${rec#*$'\t'}
     case "$st" in done|blocked|error) ;; *) continue;; esac
+    if [ "$st" = done ] && rex capture -s "$S" -b "$b" --trim --unwrap 2>/dev/null | tail -8 | grep -q -E '[0-9]+ running agents?|⠙|⠋|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'; then
+      continue
+    fi
     last=$(awk -F'\t' -v n="$n" '$1==n{print $2}' "$SEEN")
     [ "$ts" = "$last" ] && continue
     report "$n" "$b" "$st" "$ts"; found=1
@@ -53,6 +56,11 @@ if [ "${1:-}" = "--init" ]; then
 fi
 
 if [ "${1:-}" != "--follow" ]; then pending && exit 0; else pending; fi
+
+if [ "${1:-}" = "--follow" ]; then
+  ( while sleep "${SWEEP_SECONDS:-120}"; do pending || true; done ) &
+  trap 'kill $! 2>/dev/null' EXIT
+fi
 
 rex events -s "$S" --json | while IFS= read -r line; do
   ev=$(jq -r 'select(.payload.event.type=="block_event") | .payload.event.payload | select(.name=="program_status_changed" or .name=="desktop_notification") | .name' <<<"$line" 2>/dev/null)
