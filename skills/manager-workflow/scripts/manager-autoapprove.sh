@@ -31,7 +31,7 @@ while true; do
       rex send-key -s "$S" -b "$B" enter >/dev/null
       echo "$(date '+%FT%T') tab $n approved: $q $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-160)"
     else
-      key="$n|$q|$(printf '%s' "$body" | cksum)"
+      key="$n|$q|$(printf '%s\n' "$scr" | sed -n '3,/→ Yes/p' | cksum)"
       if [ "$key" != "${last_needs[$n]:-}" ]; then
         echo "$(date '+%FT%T') tab $n NEEDS MANAGER: $q $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-200)"
         last_needs[$n]=$key
