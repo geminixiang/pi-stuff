@@ -33,7 +33,9 @@ Run these steps for every piece of work. Each ends on a checkable criterion.
 Agents stop silently; a tab that finished looks the same as one still working unless you check. Two rules:
 
 - The tab watcher (`~/.pi/manager-watch.sh --follow` under `bash_bg` with `notify_on: "^===== tab "`) and the auto-approver (`~/.pi/manager-autoapprove.sh` with `notify_on: "NEEDS MANAGER"`, no arguments so it covers every registered tab) must be running whenever any task is `running` on a tab. Check `bash_bg_output` at the start of each manager turn; restart them if missing. Treat each watcher notice as an agent report and run the review gate that turn. Each notice names `report=<file>`: the tab's full last reply. Read that file instead of capturing the screen.
-- The scripts live in `scripts/` of this skill; `~/.pi/manager-*.sh` are symlinks to them.
+- The scripts live in `scripts/` of this skill; `~/.pi/manager-*.sh` are symlinks to them. Stop a watcher before editing its script (bash reads a running script lazily), run `bash -n`, then restart it.
+- A `state=blocked` notice is the user's time running out: handle it that turn. If the action is one the user already authorised, approve it; otherwise ask the user. A tab left blocked is re-reported as `blocked-still(<n>m)` every 5 minutes.
+- At the start of every manager turn run `~/.pi/manager-tab.sh list` and act on any `blocked` tab before anything else.
 - Never write that a tab is working ("3 號在改…") without reading its `program_status` in the same turn. If it is `done`, read its last output and report the result instead.
 
 pi-tasks enforces part of this: setting a task `running` parks the same tab's other running task as `todo`, and stale or overdue tasks are injected before each run. Resolve every injected task in that turn.

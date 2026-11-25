@@ -14,18 +14,19 @@ REALERT=${REALERT_SECONDS:-300}
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 mkdir -p "$REPORTS"
 touch "$SEEN"
+rmdir "$SEEN.lock" 2>/dev/null || true
 
 epoch() { date -j -f '%Y-%m-%dT%H:%M:%S' "${1%%.*}" +%s 2>/dev/null || date -d "$1" +%s; }
 
 status_of() {
-  rex block call -s "$S" -b "$1" program_status 2>/dev/null \
-    | jq -r '.records | (map(select(.id == null)) + .)[0] // {} | [.state // "", .kind // "", .updated_at // "", (.msg // "")] | @tsv'
+  rex block call -s "$S" -b "$1" program_status </dev/null 2>/dev/null \
+    | jq -r '.records | (map(select(.id == null)) + .)[0] // {} | [.state // "-", .kind // "", .updated_at // "", (.msg // "")] | join("\u001f")'
 }
 
 report() {
   local n=$1 b=$2 st=$3 kind=$4 ts=$5 msg=$6 label screen file note=""
   label=$(awk -F'\t' -v n="$n" '$1==n{print $4}' "$TSV" | tail -1)
-  screen=$(rex capture -s "$S" -b "$b" --trim --unwrap 2>/dev/null)
+  screen=$(rex capture -s "$S" -b "$b" --trim --unwrap </dev/null 2>/dev/null)
   file="$REPORTS/tab$n-$(date +%Y%m%dT%H%M%S).md"
   if ! printf '%s\n' "$screen" | python3 "$HERE/last-reply.py" > "$file" 2>/dev/null; then
     printf '%s\n' "$screen" | grep -v -E '^\s*$|^─|TPS |↑|~/Github|Elapsed' | tail -80 > "$file"
@@ -51,9 +52,9 @@ pending() {
   while IFS=$'\t' read -r n w b rest; do
     [ "$n" = 0 ] && continue
     [ -z "$b" ] && continue
-    IFS=$'\t' read -r st kind ts msg < <(status_of "$b")
+    IFS=$'\x1f' read -r st kind ts msg < <(status_of "$b")
     case "$st" in done|blocked|error) ;; *) continue;; esac
-    if [ "$st" = done ] && rex capture -s "$S" -b "$b" --trim --unwrap 2>/dev/null | tail -8 | grep -q -E '[0-9]+ running agents?|⠙|⠋|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'; then
+    if [ "$st" = done ] && rex capture -s "$S" -b "$b" --trim --unwrap </dev/null 2>/dev/null | tail -8 | grep -q -E '[0-9]+ running agents?|⠙|⠋|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏'; then
       continue
     fi
     seen=$(awk -F'\t' -v n="$n" '$1==n{print $2"\t"$3}' "$SEEN")
@@ -72,7 +73,7 @@ pending() {
 if [ "${1:-}" = "--init" ]; then
   while IFS=$'\t' read -r n w b rest; do
     [ -z "$b" ] && continue
-    IFS=$'\t' read -r st kind ts msg < <(status_of "$b")
+    IFS=$'\x1f' read -r st kind ts msg < <(status_of "$b")
     [ -n "$ts" ] && printf '%s\t%s\t%s\n' "$n" "$ts" "$(date +%s)"
   done < <(awk -F'\t' '{last[$1]=$0} END{for(k in last) print last[k]}' "$TSV") > "$SEEN"
   echo "seeded $(wc -l < "$SEEN") tabs"; exit 0
