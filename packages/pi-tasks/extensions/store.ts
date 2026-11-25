@@ -15,6 +15,7 @@ export interface Task {
   agent_id: string | null;
   result: string | null;
   note: string | null;
+  due: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -27,6 +28,7 @@ export const FIELDS = [
   "agent_id",
   "result",
   "note",
+  "due",
 ] as const;
 export type Fields = Partial<Pick<Task, (typeof FIELDS)[number]>>;
 
@@ -70,6 +72,9 @@ export class TaskStore {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );`);
+    const columns = this.db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "due"))
+      this.db.exec("ALTER TABLE tasks ADD COLUMN due TEXT");
   }
 
   add(fields: Fields & { title: string }): Task {
@@ -93,6 +98,40 @@ export class TaskStore {
       if (changes === 0) throw new Error(`Task ${id} not found`);
     }
     return this.get(id);
+  }
+
+  /** Demote other running tasks on the same agent to todo; one agent, one running task. */
+  handOff(task: Task): Task[] {
+    if (task.status !== "running" || !task.agent_id) return [];
+    const others = this.db
+      .prepare("SELECT * FROM tasks WHERE status = 'running' AND agent_id = ? AND id != ?")
+      .all(task.agent_id, task.id) as unknown as Task[];
+    return others.map((other) =>
+      this.update(other.id, {
+        status: "todo",
+        note: [
+          other.note,
+          `agent ${task.agent_id} moved to #${task.id}; parked until re-dispatched`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      }),
+    );
+  }
+
+  /** Running tasks untouched for `staleHours`, and open tasks whose due time has passed. */
+  attention(staleHours = 24): { stale: Task[]; due: Task[] } {
+    const stale = this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE status = 'running' AND updated_at < datetime('now', ?) ORDER BY updated_at",
+      )
+      .all(`-${staleHours} hours`) as unknown as Task[];
+    const due = this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE status NOT IN ('done','cancelled') AND due IS NOT NULL AND datetime(due) <= datetime('now') ORDER BY due",
+      )
+      .all() as unknown as Task[];
+    return { stale, due };
   }
 
   get(id: number): Task {

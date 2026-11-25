@@ -59,3 +59,24 @@ test("database lives in the project .pi and is git-ignored", () => {
     "?? .pi/.gitignore",
   );
 });
+
+test("one running task per agent and attention list", () => {
+  const store = new TaskStore(join(tmp(), "tasks.db"));
+  const a = store.add({ title: "A", status: "running", agent_id: "3" });
+  const b = store.add({ title: "B", status: "running", agent_id: "3" });
+  const parked = store.handOff(b);
+  assert.deepEqual(
+    parked.map((t) => [t.id, t.status]),
+    [[a.id, "todo"]],
+  );
+  assert.match(store.get(a.id).note ?? "", /moved to #2/);
+  assert.deepEqual(store.handOff(store.add({ title: "C", status: "running" })), []);
+  store.update(a.id, { due: "2000-01-01T00:00Z" });
+  const { stale, due } = store.attention();
+  assert.deepEqual(stale, []);
+  assert.deepEqual(
+    due.map((t) => t.id),
+    [a.id],
+  );
+  store.close();
+});
