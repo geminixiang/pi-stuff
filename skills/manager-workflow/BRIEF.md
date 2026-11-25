@@ -25,7 +25,7 @@ Fill every section; delete none. Short sentences.
 - gcloud 一律加逾時：`perl -e 'alarm shift; exec @ARGV' 60 gcloud ...`；Cloud Build 狀態用 `gh api .../check-runs`
 - 推論要標明；不要印出密碼或 key
 - 用自己的 worktree，不要在共用 checkout 切 branch
-- 有寫給人看的文件（README、docs、tool 說明、PR 描述）就照 ~/Github/pi-stuff/skills/manager-workflow/DOCS.md 用 rex 開 agy（gemini-4-neon-high）精簡一次，自己核對 diff 後獨立 commit
+- 有寫給人看的文件（README、docs、tool 說明、PR 描述）就照 ~/Github/pi-stuff/skills/manager-workflow/DOCS.md 用 rex 開 agy（gemini-4-neon-high，帶 --dangerously-skip-permissions）精簡一次，自己核對 diff 後獨立 commit
 
 回報：<要回報什麼、格式>
 ```

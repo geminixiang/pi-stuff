@@ -10,7 +10,7 @@ From the repo root, after the code change is committed:
 
 ```sh
 rex window new -s worker "<n> docs pass (agy)" --cwd "$PWD" --focus=false --keep-open -- \
-  agy --model gemini-4-neon-high --mode accept-edits -i "$(cat <<'EOF'
+  agy --model gemini-4-neon-high --dangerously-skip-permissions -i "$(cat <<'EOF'
 Tighten the docs changed on this branch: <files>.
 Code is the source of truth. Keep only: design intent (why this way, what was ruled out and why), what a maintainer must know or do (upgrade steps, external limits not visible in code, links to official docs), and commands a reader runs.
 Cut: anything the code already says (parameter lists, field names, step-by-step behaviour, constant values), background the reader doesn't act on, hedging, repeated points, implementation notes.
