@@ -5,7 +5,9 @@
   "clock": "real",
   "timeoutMs": 30000,
   "toolPolicy": {
-    "requireTools": ["bash_bg"],
-    "forbidTools": ["supervisor_start"]
+    "requireTools": [
+      "bash_bg"
+    ],
+    "forbidTools": []
   }
 }

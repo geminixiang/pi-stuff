@@ -17,7 +17,6 @@ export async function smokeRpc(piBin) {
 			USERPROFILE: paths.home,
 			PI_CODING_AGENT_DIR: paths.agentDir,
 			PI_BG_BASH_DIR: paths.bgDir,
-			PI_TASKD_HOME: paths.taskdHome,
 			PI_OFFLINE: "1",
 		},
 	});

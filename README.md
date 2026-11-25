@@ -25,21 +25,9 @@ Shared skills in [`skills/`](skills): `evidence-chain`, `upstream-pr`, `ui-evide
 | [`@geminixiang/pi-packyapi`](packages/pi-packyapi)                   | [![npm](https://img.shields.io/npm/v/%40geminixiang%2Fpi-packyapi)](https://www.npmjs.com/package/@geminixiang/pi-packyapi)                   | Use a curated PackyAPI model catalog with secure Pi login.                                                                                  |
 | [`@geminixiang/pi-diff`](packages/pi-diff)                           | [![npm](https://img.shields.io/npm/v/%40geminixiang%2Fpi-diff)](https://www.npmjs.com/package/@geminixiang/pi-diff)                           | Open a GitHub-like Git diff viewer in the browser.                                                                                          |
 | [`@geminixiang/pi-gpt-image`](packages/pi-gpt-image)                 | [![npm](https://img.shields.io/npm/v/%40geminixiang%2Fpi-gpt-image)](https://www.npmjs.com/package/@geminixiang/pi-gpt-image)                 | Generate and edit images with gpt-image-2 through Pi's existing Codex OAuth login.                                                          |
-| [`@geminixiang/pi-task-protocol`](packages/pi-task-protocol)         | 0.1.0                                                                                                                                         | Versioned contracts for durable local tasks, events, output cursors, and lifecycle transitions.                                             |
-| [`@geminixiang/pi-supervisor`](packages/pi-supervisor)               | 0.1.0                                                                                                                                         | Run shell-free processes and services through a crash-reconciled local task daemon.                                                         |
-| [`@geminixiang/pi-verification`](packages/pi-verification)           | 0.1.0                                                                                                                                         | Run project verification plans through the supervisor and retain fresh, redacted evidence.                                                  |
 | [`@geminixiang/pi-jev`](packages/pi-jev)                             | 0.1.0                                                                                                                                         | Ask Jev, TypeSafe's calibrated decision model, typed boolean/choice/score questions for classification, scoring, ranking, and verification. |
 | [`@geminixiang/pi-rex-snap`](packages/pi-rex-snap)                   | 0.1.0                                                                                                                                         | Save Rex sessions with the pi session in each pane, and restore them after a Rex server restart.                                            |
 | [`@geminixiang/pi-tasks`](packages/pi-tasks)                         | 0.1.0 (private)                                                                                                                               | Project-level SQLite task list for a Pi session that delegates work to subagents.                                                           |
-
-The new runtime packages form a layered suite:
-
-```text
-pi-supervisor ──> pi-task-protocol
-pi-verification ──> pi-supervisor
-```
-
-`pi-supervisor` also exposes a process-local client for the public `pi-subagents` v2 event-bus RPC. It does not claim durable subagent identity because the upstream public interface currently exposes only ping, spawn, and stop.
 
 The standalone `@geminixiang/pi-code-smell` package is intentionally not part of this repository. Its functionality remains available through `@geminixiang/pi-simplify`.
 

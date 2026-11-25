@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { spawnSync } from "node:child_process";
 
 /** Captured before any eval code changes HOME. */
 export const realHome = homedir();
@@ -32,7 +31,6 @@ export function createSandbox(prefix) {
 		home: join(root, "home"),
 		agentDir: join(root, "agent"),
 		bgDir: join(root, "bg-bash"),
-		taskdHome: join(root, "taskd"),
 		workspace: join(root, "workspace"),
 	};
 	for (const dir of Object.values(paths)) {
@@ -49,13 +47,11 @@ export function pinProcessHome(paths) {
 }
 
 export function applySandboxEnv(paths) {
-	for (const dir of [paths.agentDir, paths.bgDir, paths.taskdHome, paths.workspace]) {
+	for (const dir of [paths.agentDir, paths.bgDir, paths.workspace]) {
 		assertIsolated(dir);
 	}
 	process.env.PI_CODING_AGENT_DIR = paths.agentDir;
 	process.env.PI_BG_BASH_DIR = paths.bgDir;
-	process.env.PI_TASKD_HOME = paths.taskdHome;
-	delete process.env.PI_TASKD_SOCKET;
 }
 
 function isAlive(pid) {
@@ -91,24 +87,7 @@ export function killRecordedJobs(bgDir) {
 	}
 }
 
-export function killTaskd(taskdHome) {
-	let pid = 0;
-	try {
-		pid = Number(readFileSync(join(taskdHome, "taskd.sock.lock"), "utf8").trim());
-	} catch {
-		return;
-	}
-	if (!pid || !isAlive(pid)) return;
-	signal(pid, "SIGTERM");
-	const deadline = Date.now() + 500;
-	while (isAlive(pid) && Date.now() < deadline) {
-		spawnSync("sleep", ["0.05"]);
-	}
-	if (isAlive(pid)) signal(pid, "SIGKILL");
-}
-
 export function disposeSandbox(paths) {
 	killRecordedJobs(paths.bgDir);
-	killTaskd(paths.taskdHome);
 	rmSync(paths.root, { recursive: true, force: true });
 }

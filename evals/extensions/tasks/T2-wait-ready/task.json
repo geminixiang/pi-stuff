@@ -5,9 +5,20 @@
   "clock": "real",
   "timeoutMs": 120000,
   "toolPolicy": {
-    "requireTools": ["bash_bg"],
-    "forbidTools": ["supervisor_start"],
-    "bashWrongIfMatches": ["sleep", "while"],
-    "requireAnyArg": { "tool": "bash_bg", "keys": ["wait_until", "notify_on"] }
+    "requireTools": [
+      "bash_bg"
+    ],
+    "forbidTools": [],
+    "bashWrongIfMatches": [
+      "sleep",
+      "while"
+    ],
+    "requireAnyArg": {
+      "tool": "bash_bg",
+      "keys": [
+        "wait_until",
+        "notify_on"
+      ]
+    }
   }
 }

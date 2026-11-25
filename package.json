@@ -23,8 +23,8 @@
     "test": "npm test --workspaces --if-present",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
-    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
-    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{task-protocol,supervisor,verification,gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
+    "fmt": "oxfmt package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
+    "fmt:check": "oxfmt --check package.json README.md 'packages/pi-simplify/**/*.ts' packages/pi-simplify/package.json 'packages/pi-{gpt-image,jev,rex-snap,tasks}/**/*.{ts,mjs,json,md}' 'packages/pi-packyapi/**/*.{ts,mjs,json,md}'",
     "eval:extensions": "node --test evals/extensions/harness/*.test.mjs && node evals/extensions/run.mjs --mode deterministic",
     "eval:extensions:live": "node evals/extensions/run.mjs --mode live",
     "eval:baseline": "node evals/extensions/baseline.mjs",
@@ -49,9 +49,7 @@
       "./packages/pi-packyapi/extensions/index.ts",
       "./packages/pi-rex-snap/extensions/index.ts",
       "./packages/pi-simplify/index.ts",
-      "./packages/pi-supervisor/extensions",
-      "./packages/pi-tasks/extensions/index.ts",
-      "./packages/pi-verification/index.ts"
+      "./packages/pi-tasks/extensions/index.ts"
     ],
     "skills": [
       "./skills",

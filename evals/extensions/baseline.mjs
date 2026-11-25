@@ -19,10 +19,6 @@ function noteFor(run) {
 			`drift ${run.loopGrid.driftMs}ms, missed ${run.loopGrid.missed}, duplicates ${run.loopGrid.duplicates}, sleepFires ${run.loopGrid.sleepFires ?? ""}`.trim(),
 		);
 	}
-	const kill = (run.observations ?? []).find((item) => item.type === "hard-kill");
-	if (kill) {
-		parts.push(`taskd ${kill.taskdAlive ? "alive" : "dead"}, port ${kill.portListening ? "up" : "down"}, bash_bg ${kill.buildAlive ? "alive" : "dead"}`);
-	}
 	if (run.expectedFail && run.status === "expected-fail") parts.push(run.expectedFail);
 	const known = (run.failures ?? []).filter((failure) => failure.startsWith("expected: "));
 	if (known.length && run.status !== "expected-fail") parts.push(known.join("; "));
@@ -82,7 +78,7 @@ export function renderBaseline(summary) {
 		"",
 		table,
 		"",
-		"T4's contract: after SIGKILL of the host, taskd and the listening service survive. A plain `bash_bg` child may die; the Notes column records which happened. T5, T6, and T12 use the fake clock and are skipped in live mode. T10 runs only when `ANTHROPIC_API_KEY` is set.",
+		"T5, T6, and T12 use the fake clock and are skipped in live mode. T10 runs only when `ANTHROPIC_API_KEY` is set.",
 	].join("\n");
 }
 

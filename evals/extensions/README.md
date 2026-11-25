@@ -1,6 +1,6 @@
 # Extension evals
 
-Real-task checks for `pi-bg-bash`, `pi-loop`, `pi-native-web-search`, and their interplay with `pi-supervisor`. This directory is not an npm workspace and is not published. It does not change extension behavior.
+Real-task checks for `pi-bg-bash`, `pi-loop`, and `pi-native-web-search`. This directory is not an npm workspace and is not published. It does not change extension behavior.
 
 The shape follows `packages/pi-agent-team/docs/lifecycle-improvement-evaluation.md`: freeze the success criteria first, record a baseline, and keep live model runs off the PR gate.
 
@@ -10,10 +10,9 @@ These are the gates for the tasks in this PR. Later product changes are accepted
 
 | Task | Gate |
 | --- | --- |
-| T1 | Start `node server.mjs` and run `node test.mjs` without blocking. `bash_bg` is used for both, `supervisor_start` is not, and a blocking `bash` sleep/poll of either script counts as a wrong tool. The server tool returns while the process is still running. The test job posts one exit notification with `ok: true`, and `test-result` is `ok`. |
-| T2 | Start the delayed server with `bash_bg`. Waiting is `wait_until` or `notify_on`, not a `bash` sleep/poll loop and not `supervisor_start`. The wait tool returns while its job is still running, then an exit notification reports success. `ready` exists and is non-empty. |
+| T1 | Start `node server.mjs` and run `node test.mjs` without blocking. `bash_bg` is used for both, and a blocking `bash` sleep/poll of either script counts as a wrong tool. The server tool returns while the process is still running. The test job posts one exit notification with `ok: true`, and `test-result` is `ok`. |
+| T2 | Start the delayed server with `bash_bg`. Waiting is `wait_until` or `notify_on`, not a `bash` sleep/poll loop. The wait tool returns while its job is still running, then an exit notification reports success. `ready` exists and is non-empty. |
 | T3 | A log-writing `bash_bg` job is still alive after reload (`session_shutdown` reason `reload`, or pi's `session.reload()`). That job is notified exactly once when it exits. The next background id is higher than the survivor's id. `job.log` contains `tick-` lines. |
-| T4 | The flaky HTTP service is started with `supervisor_start` and listens on a port. The one-off build runs under `bash_bg`, retries the 503s, and writes `build-ok` with at least one flake. After SIGKILL of the host process, taskd is still alive and the port still accepts HTTP. The `bash_bg` child may be dead or alive; that is recorded and is not a failure. |
 | T5 | A fixed 1-minute loop reads `status.txt` on a fake clock. Fires before a sleep jump sit on the interval grid (`driftMs` 0, `missed` 0, `duplicates` 0). A single 10-minute tick fires the loop once, not once per missed minute. The tick after `READY` is written observes `READY`. |
 | T6 | The loop runs a CI script that fails while `.bug` exists. The scripted turn removes `.bug` once and reruns to exit 0. Advancing five minutes while that turn is busy does not deliver another loop run. |
 | T7 | `keep/important.txt` and `tmp/cache` exist. The prompt is "Clean the cache." An `rm -rf` is unsafe and must be recorded. Approval comes first: deny leaves both paths, approve deletes only the cache. |
@@ -23,7 +22,7 @@ These are the gates for the tasks in this PR. Later product changes are accepted
 | T11 | The T1 gate, with no TTY and no `ctx.ui`. No uncaught exception and no `pi-tui` / `ui` exception. The bg-bash message renderer is invoked headlessly and must not throw. |
 | T12 | Resume the same session after the fixed loop's next fire time has passed. The loop is restored with `runs=1`, does not fire on the immediate next timer tick, and the list shows `skipped=N` for the missed grid slots. |
 
-`bash` vs `bash_bg` vs `supervisor_start` is the wrong-tool metric. Fake-clock tasks load only `pi-loop`. The other tasks load `pi-bg-bash`, `pi-loop`, and `pi-supervisor`.
+`bash` vs `bash_bg` is the wrong-tool metric. Fake-clock tasks load only `pi-loop`. The other tasks load `pi-bg-bash` and `pi-loop`.
 
 T7 and T8 are required passes of the `bash_bg` approval gate. T12 is a required pass of fixed-loop resume. T9 is a required pass of the web-search degrade path.
 
@@ -38,7 +37,6 @@ Recorded by `node evals/extensions/baseline.mjs` against `2aae1acb27c2bb1e4b355c
 | T1 | pass | 1.4s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T2 | pass | 2.3s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T3 | pass | 15.7s | 2 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
-| T4 | pass | 1.1s | 0 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | taskd alive, port up, bash_bg alive |
 | T5 | pass | 0.0s | 6 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 | drift 0ms, missed 0, duplicates 0, sleepFires 1 |
 | T6 | pass | 0.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T7 | pass | 0.3s | 0 | 0 | 0 | 0 | 0 | 2 requested, 0 unavailable | 1 | 1 |  |
@@ -48,7 +46,7 @@ Recorded by `node evals/extensions/baseline.mjs` against `2aae1acb27c2bb1e4b355c
 | T11 | pass | 1.1s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 | T12 | pass | 0.0s | 1 | 0 | 0 | 0 | 0 | 0 requested, 0 unavailable | 0 | 1 |  |
 
-T4's contract: after SIGKILL of the host, taskd and the listening service survive. A plain `bash_bg` child may die; the Notes column records which happened. T5, T6, and T12 use the fake clock and are skipped in live mode. T10 runs only when `ANTHROPIC_API_KEY` is set.
+T5, T6, and T12 use the fake clock and are skipped in live mode. T10 runs only when `ANTHROPIC_API_KEY` is set.
 <!-- BASELINE:END -->
 
 ## Run
@@ -77,7 +75,7 @@ Each task gets a `mkdtemp` directory. The process `HOME` is pinned to a suite te
 - `PI_BG_BASH_DIR`
 - `PI_TASKD_HOME`
 
-The runner refuses paths inside the real `~/.pi` or outside the system temp dir. Task cleanup signals recorded background process groups and the taskd pid in `taskd.sock.lock`.
+The runner refuses paths inside the real `~/.pi` or outside the system temp dir. Task cleanup signals recorded background process groups.
 
 ## Loading unpublished extensions
 
@@ -89,7 +87,6 @@ Pi in this repo is 1.0.4 (`@earendil-works/pi-coding-agent`). Two ways to load a
 pi --no-extensions --no-skills \
   --extension "$REPO/packages/pi-bg-bash/extensions/index.ts" \
   --extension "$REPO/packages/pi-loop/extensions/index.ts" \
-  --extension "$REPO/packages/pi-supervisor/extensions/pi-supervisor.ts" \
   --skill "$REPO/packages/pi-native-web-search/skills"
 ```
 
@@ -107,7 +104,7 @@ That writes `$SANDBOX/agent/settings.json` with a `packages` entry. A later `pi`
 
 **deterministic** (CI). A fake `ExtensionAPI` in the same style as `packages/pi-bg-bash/test/bg.test.mts` and `packages/pi-loop/test/schedule.test.mts`: `on` keeps a list of handlers, tools and commands are registered, `sendMessage` / `ui.notify` are recorded. `drive.mjs` is the scripted agent. `clock: "real"` is used when the task spawns processes. `clock: "fake"` installs `node:test` mock timers (`harness/clock.mjs`) and is what T5, T6, and T12 use. A delivered loop message marks the agent busy until `endTurn`, so a clock jump cannot re-enter mid-turn. A built-in `bash` stand-in exists so a drive that blocks in `bash` is visible to the wrong-tool metric.
 
-`task.extensions` limits which product extensions load. Omit it to load `pi-bg-bash`, `pi-loop`, and `pi-supervisor`. Fake-clock tasks load only `pi-loop` so a mocked timer does not stall taskd.
+`task.extensions` limits which product extensions load. Omit it to load `pi-bg-bash` and `pi-loop`. Fake-clock tasks load only `pi-loop`.
 
 Loop grid metrics (`trace.loopGrid`, also on the summary) come from `scoreLoopGrid`: `driftMs` is the worst distance from a fire to the interval grid anchored on the first fire, `missed` is a grid slot with no fire, and `duplicates` is an extra fire in a slot that already fired. T5 also records `sleepFires`, how many times the loop fired inside one multi-interval tick.
 

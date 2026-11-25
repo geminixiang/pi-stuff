@@ -7,20 +7,18 @@ import { classifyUnsafe } from "./approval.mjs";
 
 const bgPath = join(repoRoot, "packages/pi-bg-bash/extensions/index.ts");
 const loopPath = join(repoRoot, "packages/pi-loop/extensions/index.ts");
-const supervisorPath = join(repoRoot, "packages/pi-supervisor/extensions/pi-supervisor.ts");
 
 function stamped(path) {
 	const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	return `${pathToFileURL(path).href}?eval=${stamp}`;
 }
 
-export const PRODUCT_EXTENSIONS = ["pi-bg-bash", "pi-loop", "pi-supervisor"];
+export const PRODUCT_EXTENSIONS = ["pi-bg-bash", "pi-loop"];
 
 /**
  * Load the product extensions into a fresh module instance.
- * pi-supervisor captures PI_TASKD_HOME when the module is evaluated, so each
- * session imports it with a cache-busting query after the sandbox env is set.
- * Fake-clock tasks pass a subset so a mocked timer does not stall taskd startup.
+ * Each session imports them with a cache-busting query after the sandbox env is set.
+ * Fake-clock tasks pass a subset.
  */
 export async function loadProductExtensions(pi, names = PRODUCT_EXTENSIONS) {
 	const wanted = new Set(names);
@@ -34,11 +32,6 @@ export async function loadProductExtensions(pi, names = PRODUCT_EXTENSIONS) {
 		const loop = await import(stamped(loopPath));
 		if (typeof loop.default !== "function") throw new Error("pi-loop did not export a loader");
 		loop.default(pi);
-	}
-	if (wanted.has("pi-supervisor")) {
-		const supervisor = await import(stamped(supervisorPath));
-		if (typeof supervisor.default !== "function") throw new Error("pi-supervisor did not export a loader");
-		supervisor.default(pi);
 	}
 }
 

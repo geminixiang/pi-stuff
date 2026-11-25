@@ -3,10 +3,16 @@
   "title": "Resume restores a fixed loop without firing it",
   "headless": false,
   "clock": "fake",
-  "extensions": ["pi-loop"],
+  "extensions": [
+    "pi-loop"
+  ],
   "timeoutMs": 30000,
   "toolPolicy": {
-    "requireTools": ["loop_create"],
-    "forbidTools": ["bash_bg", "supervisor_start"]
+    "requireTools": [
+      "loop_create"
+    ],
+    "forbidTools": [
+      "bash_bg"
+    ]
   }
 }

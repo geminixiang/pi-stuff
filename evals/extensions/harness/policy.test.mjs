@@ -7,11 +7,11 @@ test("bash sleep is wrong and bash_bg sleep is not", () => {
 		[
 			{ name: "bash", args: { command: "sleep 5 && node server.mjs" } },
 			{ name: "bash_bg", args: { command: "sleep 5", wait_until: true } },
-			{ name: "supervisor_start", args: { command: "node" } },
+			{ name: "other_tool", args: { command: "node" } },
 		],
 		{
 			requireTools: ["bash_bg"],
-			forbidTools: ["supervisor_start"],
+			forbidTools: ["other_tool"],
 			bashWrongIfMatches: ["sleep"],
 			requireAnyArg: { tool: "bash_bg", keys: ["wait_until", "notify_on"] },
 		},
@@ -19,7 +19,7 @@ test("bash sleep is wrong and bash_bg sleep is not", () => {
 	assert.equal(result.wrongTool, 2);
 	assert.deepEqual(
 		result.wrongToolCalls.map((item) => item.tool),
-		["bash", "supervisor_start"],
+		["bash", "other_tool"],
 	);
 });
 

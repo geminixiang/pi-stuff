@@ -3,10 +3,14 @@
   "title": "Loop fixes a flaky CI script once",
   "headless": false,
   "clock": "fake",
-  "extensions": ["pi-loop"],
+  "extensions": [
+    "pi-loop"
+  ],
   "timeoutMs": 30000,
   "toolPolicy": {
-    "requireTools": ["loop_create"],
-    "forbidTools": ["supervisor_start"]
+    "requireTools": [
+      "loop_create"
+    ],
+    "forbidTools": []
   }
 }

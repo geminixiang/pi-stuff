@@ -1,5 +1,5 @@
 /**
- * Classify tool calls for the bash / bash_bg / supervisor interplay metric.
+ * Classify tool calls for the bash / bash_bg interplay metric.
  * A bash_bg command may itself contain sleep (the job). Only the built-in
  * `bash` tool is matched against bashWrongIfMatches.
  */

@@ -9,8 +9,14 @@
     "followUp": "The logger has finished. Run the command true in the background exactly once, then stop."
   },
   "toolPolicy": {
-    "requireTools": ["bash_bg"],
-    "forbidTools": ["supervisor_start"],
-    "bashWrongIfMatches": ["sleep", "while", "job.log"]
+    "requireTools": [
+      "bash_bg"
+    ],
+    "forbidTools": [],
+    "bashWrongIfMatches": [
+      "sleep",
+      "while",
+      "job.log"
+    ]
   }
 }

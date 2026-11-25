@@ -22,9 +22,6 @@ Release one workspace at a time from `geminixiang/pi-stuff`.
   - `pi-packyapi` → `@geminixiang/pi-packyapi`
   - `pi-jev` → `@geminixiang/pi-jev`
   - `pi-gpt-image` → `@geminixiang/pi-gpt-image`
-  - `pi-task-protocol` → `@geminixiang/pi-task-protocol`
-  - `pi-supervisor` → `@geminixiang/pi-supervisor`
-  - `pi-verification` → `@geminixiang/pi-verification`
 
 New npm packages require an owner to bootstrap publication and configure trusted publishing before this workflow can publish them. Report authentication or authorization failures rather than publishing locally.
 - Git tag and GitHub release title: `<package>@<version>`, for example `pi-diff@0.4.1`.

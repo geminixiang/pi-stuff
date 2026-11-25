@@ -37,8 +37,6 @@ export function productResourceArgs({ reloadCommand = false } = {}) {
 		join(repoRoot, "packages/pi-bg-bash/extensions/index.ts"),
 		"--extension",
 		join(repoRoot, "packages/pi-loop/extensions/index.ts"),
-		"--extension",
-		join(repoRoot, "packages/pi-supervisor/extensions/pi-supervisor.ts"),
 		"--skill",
 		join(repoRoot, "packages/pi-native-web-search/skills"),
 	];
