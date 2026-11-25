@@ -5,6 +5,7 @@
 S=${MANAGER_AGENT_SESSION:-worker}
 TSV=${MANAGER_TABS:-$HOME/.pi/manager-tabs.tsv}
 fixed="$*"
+declare -A last_needs
 while true; do
   tabs=${fixed:-$(awk -F'\t' '$1!=0 && $3!=""{print $1}' "$TSV" | sort -un)}
   for n in $tabs; do
@@ -28,8 +29,11 @@ while true; do
       rex send-key -s "$S" -b "$B" enter >/dev/null
       echo "$(date '+%FT%T') tab $n approved: $q $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-160)"
     else
-      echo "$(date '+%FT%T') tab $n NEEDS MANAGER: $q $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-200)"
-      sleep 50
+      key="$n|$(printf '%s' "$q$body" | cksum | cut -d' ' -f1)"
+      if [ "$key" != "${last_needs[$n]:-}" ]; then
+        echo "$(date '+%FT%T') tab $n NEEDS MANAGER: $q $(printf '%s' "$body" | tr '\n' ' ' | cut -c1-200)"
+        last_needs[$n]=$key
+      fi
     fi
   done
   sleep 10
