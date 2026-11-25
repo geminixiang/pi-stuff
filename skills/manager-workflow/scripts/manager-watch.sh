@@ -74,7 +74,7 @@ if [ "${1:-}" = "--init" ]; then
   while IFS=$'\t' read -r n w b rest; do
     [ -z "$b" ] && continue
     IFS=$'\x1f' read -r st kind ts msg < <(status_of "$b")
-    [ -n "$ts" ] && printf '%s\t%s\t%s\n' "$n" "$ts" "$(date +%s)"
+    [ -n "$ts" ] && [ "$st" != blocked ] && printf '%s\t%s\t%s\n' "$n" "$ts" "$(date +%s)"
   done < <(awk -F'\t' '{last[$1]=$0} END{for(k in last) print last[k]}' "$TSV") > "$SEEN"
   echo "seeded $(wc -l < "$SEEN") tabs"; exit 0
 fi
