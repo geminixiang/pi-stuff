@@ -63,7 +63,7 @@ test("bash_bg returns immediately and notifies with exit code and output", async
   );
   assert.ok(Date.now() - started < 200);
   assert.match(r.content[0].text, /Started bg1/);
-  assert.match(x.status["bg-bash"]!, /^bg: bg1 demo · \d+s$/);
+  assert.match(x.status["bg-bash"]!, /^Background: running: bg1 demo \(\d+s uptime\) \| \/bg$/);
   await waitFor(() => x.sent.length === 1);
   const { msg, opts } = x.sent[0];
   assert.equal(msg.customType, "bg-bash");
@@ -151,10 +151,14 @@ test("statusText names each running job with its age", () => {
     startedAt: now - 34 * 60_000,
   };
   const b = { ...base, id: "bg5", command: "npm   run    build", startedAt: now - 5_000 };
-  assert.equal(statusText([a], now), "bg: bg3 fer-issues 09Z hourly check · 34m");
+  assert.equal(statusText([a], now), "Background: running: bg3 fer-issues 09Z hourly check (34m uptime) | /bg");
   assert.equal(
     statusText([a, b], now),
-    "bg: 2 running: bg3 fer-issues 09Z ho… 34m | bg5 npm run build 5s",
+    "Background: 2 running | /bg",
+  );
+  assert.equal(
+    statusText([{ ...a, notifyOn: "EVENT" }], now, 1),
+    "Background: watching: bg3 fer-issues 09Z hourly check (34m uptime) · 1 scheduled | /bg",
   );
 });
 
@@ -320,7 +324,7 @@ test("scheduled jobs are listed, start later, and can be cancelled", async () =>
   const b = await run(x.tools.bash_bg, { command: "echo never", at: "+1h" }, x.ctx);
   assert.match(a.content[0].text, /Scheduled bg1/);
   assert.match(b.content[0].text, /Scheduled bg2/);
-  assert.match(x.status["bg-bash"]!, /^bg: 2 scheduled$/);
+  assert.match(x.status["bg-bash"]!, /^Background: 2 scheduled \| \/bg$/);
   const list = (await run(x.tools.bash_bg_output, {}, x.ctx)).content[0].text;
   assert.match(list, /bg1 \[scheduled \d{4}-/);
   assert.match((await run(x.tools.bash_bg_kill, { id: "bg2" }, x.ctx)).content[0].text, /bg2/);

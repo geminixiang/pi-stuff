@@ -124,7 +124,7 @@ The job starts exactly like any other `bash_bg` job. If it exits within `yield_m
 /bg deny <id>    leave that command unrun
 ```
 
-The footer shows the running job(s) with their age plus the number of scheduled jobs, refreshed every 15 seconds.
+The footer separates running commands, watchers (`notify_on` jobs), and scheduled jobs. Uptime is how long a job has been alive, not how long Pi has been responding. Use `/bg` to see the full list.
 
 ## Behavior
 

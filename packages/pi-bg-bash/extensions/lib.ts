@@ -254,16 +254,21 @@ function shortLabel(job: JobInfo, max: number): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name;
 }
 
-export function statusText(running: JobInfo[], now: number, scheduled = 0): string {
-  const age = (j: JobInfo) => formatDuration(now - j.startedAt);
-  const sched = scheduled ? ` · ${scheduled} scheduled` : "";
-  if (!running.length) return `bg: ${scheduled} scheduled`;
-  if (running.length === 1) {
-    const j = running[0];
-    return `bg: ${j.id} ${shortLabel(j, 40)} · ${age(j)}${sched}`;
+export function statusText(running: (JobInfo & { notifyOn?: string })[], now: number, scheduled = 0): string {
+  const watchers = running.filter((job) => job.notifyOn);
+  const commands = running.filter((job) => !job.notifyOn);
+  const groups = [["running", commands], ["watching", watchers]] as const;
+  const parts: string[] = [];
+  for (const [state, jobs] of groups) {
+    if (jobs.length === 1) {
+      const job = jobs[0];
+      parts.push(`${state}: ${job.id} ${shortLabel(job, groups.every(([, other]) => other === jobs || !other.length) ? 32 : 16)} (${formatDuration(now - job.startedAt)} uptime)`);
+    } else if (jobs.length > 1) {
+      parts.push(`${jobs.length} ${state}`);
+    }
   }
-  const items = running.map((j) => `${j.id} ${shortLabel(j, 18)} ${age(j)}`);
-  return `bg: ${running.length} running: ${items.join(" | ")}${sched}`;
+  if (scheduled) parts.push(`${scheduled} scheduled`);
+  return `Background: ${parts.join(" · ")} | /bg`;
 }
 
 export function parseApprovalMode(value: unknown): ApprovalMode | undefined {
