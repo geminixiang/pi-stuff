@@ -36,7 +36,7 @@ report() {
   printf '\n===== tab %s state=%s%s at %s (%s) report=%s\n' "$n" "$st" "$note" "$ts" "$label" "$file"
   case "$st" in
     blocked|error) printf '%s\n' "$screen" | grep -v -E '^\s*$|^─|TPS |↑|~/Github|Elapsed' | tail -"${LINES_OUT:-12}" | cut -c1-170 ;;
-    *) head -c 1200 "$file" | cut -c1-170 ;;
+    *) head -n 6 "$file" | cut -c1-170 ;;
   esac
   echo
   awk -F'\t' -v n="$n" '$1!=n' "$SEEN" > "$SEEN.tmp"
