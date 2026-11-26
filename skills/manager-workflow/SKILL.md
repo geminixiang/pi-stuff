@@ -25,7 +25,7 @@ Run these steps for every piece of work. Each ends on a checkable criterion.
 5. **Record** — The moment the user decides, write it to the task note and act on it. Never ask a decided question again; search task notes before asking anything.
    Done when: the decision is in the task note with the user's words.
 6. **Track in the issue body** — For a multi-step issue, keep one status table in the issue body (item, state, date) and update it as items move; the body is the current state, comments are the history. Every value in the table must come from the issue's own records or a fresh live check.
-7. **Close** — After merge/release/deploy, verify the live result (release applied only what the plan showed; post-apply plan `No changes`; service healthy), update the issue, then `task_update` to `done` with the evidence.
+7. **Close** — After merge/release/deploy, verify the live result (release applied only what the plan showed; post-apply plan `No changes`; service healthy), update the issue, remove the agent's local worktree and branch, then `task_update` to `done` with the evidence. Worktrees whose PR is merged, or untouched for over 30 days, are removed; ones with uncommitted changes are listed for the user instead.
    Done when: every Done-when box of the issue is true and the task is `done`, `cancelled`, or `needs_input` with a reason.
 
 ## No black holes
