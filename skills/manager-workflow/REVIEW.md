@@ -4,7 +4,7 @@ Apply every row that matches what the agent delivered. Anything not verified goe
 
 | Delivered | Check yourself |
 |---|---|
-| PR | Read the full diff. Against the user's principles: no service-specific logic in shared infra, no code comments, no over-engineering, no fallback that hides errors, same behaviour on every code path (sync and batch). CI on the head SHA. Plan comment matches the description. |
+| PR | Read the full diff before relaying it; passing CI and tests is not a design review. Against the user's principles: no service-specific logic in shared infra, no code comments, no over-engineering, no fallback that hides errors, same behaviour on every code path (sync and batch). For every new class, wrapper, options type, mapping table or private/internal attribute, ask what breaks if it is removed and whether the framework already does it; if nothing breaks, send it back before telling the user. CI on the head SHA. Plan comment matches the description. |
 | Terraform PR | Every stack's plan; only the intended actions; new resource types planned as the deployer SA; manual stacks called out. |
 | Release plan (before dispatch) | Read the repo's release pipeline (cloudbuild, deploy/promote scripts) for what happens automatically on tag, e.g. stable tags that auto-promote to 100%. Write the plan around that, not around a generic canary. |
 | Release / apply | Build log `actions=` lines equal the reviewed plan; `Idempotency check passed`; live resource read back; final plan `No changes`. |
